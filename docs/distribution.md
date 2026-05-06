@@ -50,15 +50,18 @@ The release workflow:
 5. optionally publishes APT/RPM packages to Cloudsmith
 6. updates the Homebrew tap
 
-## Required Secrets
+## Secrets
 
-- `HOMEBREW_TAP_GITHUB_TOKEN`: token that can push to the tap repository
+- `HOMEBREW_TAP_GITHUB_TOKEN`: optional; when set, updates the tap repository
+  automatically
 - `CLOUDSMITH_API_KEY`: optional; enables package publishing
 
 ## Optional Variables
 
 - `HOMEBREW_TAP_REPO`: defaults to `vincentkoc/homebrew-tap`, which installs as
   `brew tap vincentkoc/tap`
+- `CODEQL_ENABLED`: set to `true` after code scanning is enabled for the
+  repository
 - `CLOUDSMITH_APT_TARGETS`: comma-separated targets like `ubuntu/jammy,debian/trixie`
 - `CLOUDSMITH_DISTRIBUTION` and `CLOUDSMITH_RELEASE`: legacy single APT target
 - `CLOUDSMITH_RPM_DISTRIBUTION`: defaults to `el`

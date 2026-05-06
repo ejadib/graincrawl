@@ -20,6 +20,7 @@ env:
 jobs:
   analyze:
     name: analyze
+    if: ${{ vars.CODEQL_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
