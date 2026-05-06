@@ -74,7 +74,7 @@ func (a App) Run(ctx context.Context, args []string) error {
 	case "tui":
 		return a.runPlaceholder(stdout, flags, "tui", "terminal browser is not implemented yet")
 	case "completion":
-		return a.runPlaceholder(stdout, flags, "completion", "shell completion is not implemented yet")
+		return a.runCompletion(stdout, flags, cmdArgs)
 	case "help":
 		_, err := io.WriteString(stdout, usage)
 		return err
