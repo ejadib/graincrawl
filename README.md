@@ -1,65 +1,111 @@
-# graincrawl
+# 🌾 graincrawl
 
-`graincrawl` is a local-first archive tool for Granola notes, transcripts,
-summaries, panels, and meeting metadata.
+`graincrawl` archives Granola notes, transcripts, panels, people, workspaces,
+and sync metadata into a private local SQLite store.
 
-It stores a private SQLite archive under `~/.config/graincrawl`, exposes stable
-JSON command output for automation, and keeps Granola's private surfaces behind
-explicit source adapters.
+It is local-first, read-only against Granola, and shaped like the other crawl
+apps: stable JSON output, Markdown export, crawlkit snapshots, and a terminal
+browser over the archived SQLite data.
 
-## status
+## Current Scope
 
-Early implementation. The default target is read-only sync through Granola's
-desktop private API token, with plaintext desktop cache as an offline fallback.
+- sync notes from Granola's private desktop API session
+- import plaintext `cache-v6.json` as an offline fallback
+- retain transcripts, panels, people, workspaces, and raw source payloads
+- export notes to Markdown
+- browse archived notes with the shared crawlkit TUI
+- create/import portable crawlkit snapshots
+- keep encrypted JSON, OPFS, Keychain, and helper paths behind explicit unlock
+  surfaces
 
-## core commands
+## Install
 
 ```bash
+brew tap vincentkoc/tap
+brew install graincrawl
+```
+
+From source:
+
+```bash
+go install github.com/vincentkoc/graincrawl/cmd/graincrawl@latest
+```
+
+## Quick Start
+
+```bash
+graincrawl init
 graincrawl doctor
 graincrawl sync --source private-api
-graincrawl sync --source desktop-cache
+graincrawl status
+graincrawl notes
+graincrawl tui
+```
+
+Use JSON for automation:
+
+```bash
+graincrawl doctor --json
 graincrawl status --json
-graincrawl metadata --json
 graincrawl notes --json
-graincrawl search "decision" --json
-graincrawl note get <id> --json
-graincrawl transcripts get <id> --json
-graincrawl panels get <id> --json
+graincrawl tui --json
+```
+
+## Commands
+
+```bash
+graincrawl version
+graincrawl init
+graincrawl doctor
+graincrawl metadata
+graincrawl status
+graincrawl sync --source private-api
+graincrawl sync --source desktop-cache
+graincrawl runs
+graincrawl notes
+graincrawl search "decision"
+graincrawl note get <id>
+graincrawl transcripts get <id>
+graincrawl panels get <id>
+graincrawl people
+graincrawl workspaces
+graincrawl sources
+graincrawl unlock
+graincrawl secrets
 graincrawl export markdown --out ./granola-notes
 graincrawl snapshot create --out ./graincrawl-snapshot
 graincrawl import ./graincrawl-snapshot
 graincrawl tui
+graincrawl completion zsh
 ```
 
-## source policy
+## Shared crawlkit surfaces
 
-`graincrawl` never writes to Granola's local profile. It reads from copied local
-files or Granola read endpoints only.
-
-Supported source names:
-
-- `private-api`
-- `desktop-cache`
-- `public-api`
-- `companion-cli`
-- `encrypted-json`
-- `opfs`
-
-The encrypted and OPFS sources require explicit unlock commands before they can
-touch macOS Keychain, Electron safeStorage, IndexedDB, or OPFS state.
-
-## portable archives and tui
+`graincrawl metadata` exposes crawlkit control metadata for scripts and status
+dashboards.
 
 `graincrawl snapshot create` and `graincrawl import` use `crawlkit/snapshot` so
-the archive can move between machines without touching Granola's live profile.
+archives can move between machines without touching the live Granola profile.
 
-`graincrawl tui` uses the shared `crawlkit/tui` browser over archived notes. Use
-`graincrawl tui --json` for a non-interactive row snapshot.
+`graincrawl tui` uses `crawlkit/tui` over archived notes. The detail pane is
+fed from SQLite, including note text, transcript chunks, panels, and retained
+source metadata.
 
-## development
+## Distribution
 
-```bash
-go test ./...
-go vet ./...
-go run ./cmd/graincrawl --help
-```
+Releases use GoReleaser for GitHub release assets and Linux packages, plus a
+source-built Homebrew formula in `vincentkoc/tap`.
+
+See [docs/distribution.md](docs/distribution.md).
+
+## Safety Model
+
+`graincrawl` never writes to Granola app data. It reads from Granola's private
+read endpoints or local files and stores its own archive under the configured
+graincrawl paths.
+
+Encrypted JSON, OPFS, Electron safeStorage, and macOS Keychain paths require
+explicit unlock flow. Ordinary `doctor`, `status`, `notes`, `export`, and `tui`
+commands must not surprise-prompt Keychain.
+
+See [docs/security.md](docs/security.md).

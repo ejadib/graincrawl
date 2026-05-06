@@ -1,0 +1,37 @@
+version = 1
+
+[paths]
+db_path = "~/.config/graincrawl/graincrawl.db"
+cache_dir = "~/.cache/graincrawl"
+log_dir = "~/.local/state/graincrawl/logs"
+snapshot_dir = "~/.config/graincrawl/snapshots"
+
+[granola]
+profile_path = "~/Library/Application Support/Granola"
+app_path = "/Applications/Granola.app"
+preferred_source = "private-api"
+allow_private_api = true
+allow_public_api = false
+allow_companion_cli = true
+allow_desktop_cache = true
+allow_encrypted_json = false
+allow_opfs = false
+
+[api]
+client_version = "auto"
+platform = "darwin"
+include_shared_with_me = true
+refresh_mode = "never"
+
+[sync]
+default_limit = 100
+include_transcripts = true
+include_panels = true
+include_calendar_events = true
+include_people = true
+
+[security]
+redact_logs = true
+keychain_prompt_mode = "explicit"
+persist_helper_keys = false
+debug_keep_temp = false
