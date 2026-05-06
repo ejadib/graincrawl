@@ -4,9 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/vincentkoc/graincrawl/internal/buildinfo"
+	"github.com/vincentkoc/graincrawl/internal/config"
+	"github.com/vincentkoc/graincrawl/internal/doctor"
 	"github.com/vincentkoc/graincrawl/internal/output"
+	gruntime "github.com/vincentkoc/graincrawl/internal/runtime"
 )
 
 type App struct {
@@ -28,6 +32,10 @@ func (a App) Run(ctx context.Context, args []string) error {
 	switch cmd {
 	case "version":
 		return a.runVersion(stdout, flags)
+	case "init":
+		return a.runInit(stdout, flags)
+	case "doctor":
+		return a.runDoctor(ctx, stdout, flags)
 	case "help":
 		_, err := io.WriteString(stdout, usage)
 		return err
@@ -36,6 +44,54 @@ func (a App) Run(ctx context.Context, args []string) error {
 		_ = cmdArgs
 		return fmt.Errorf("unknown command %q", cmd)
 	}
+}
+
+func (a App) runInit(w io.Writer, flags GlobalFlags) error {
+	cfg, defaultPath, err := config.Defaults()
+	if err != nil {
+		return err
+	}
+	path, err := config.App().ResolveConfigPath(flags.ConfigPath)
+	if err != nil {
+		return err
+	}
+	if path == "" {
+		path = defaultPath
+	}
+	if err := config.EnsureDirs(cfg); err != nil {
+		return err
+	}
+	if err := config.Save(path, cfg); err != nil {
+		return err
+	}
+	result := map[string]string{"config_path": path, "db_path": cfg.Paths.DBPath}
+	if flags.JSON {
+		return output.WriteEnvelope(w, result)
+	}
+	output.PrintKV(w, "config", path)
+	output.PrintKV(w, "database", cfg.Paths.DBPath)
+	return nil
+}
+
+func (a App) runDoctor(ctx context.Context, w io.Writer, flags GlobalFlags) error {
+	rt, err := gruntime.Open(ctx, flags.ConfigPath)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	report := doctor.Run(rt.Config, rt.ConfigPath, time.Now())
+	if flags.JSON {
+		return output.WriteEnvelope(w, report)
+	}
+	output.PrintKV(w, "config", report.ConfigPath)
+	output.PrintKV(w, "database", report.DBPath)
+	output.PrintKV(w, "granola_app", report.GranolaApp.Installed)
+	output.PrintKV(w, "granola_version", report.GranolaApp.Version)
+	output.PrintKV(w, "cache_v6", report.Files.CacheV6.Exists)
+	output.PrintKV(w, "supabase", report.Files.Supabase.Exists)
+	output.PrintKV(w, "opfs_present", report.Unlock.OPFSPresent)
+	output.PrintKV(w, "keychain_may_prompt", report.Unlock.KeychainMayPrompt)
+	return nil
 }
 
 func (a App) runVersion(w io.Writer, flags GlobalFlags) error {
