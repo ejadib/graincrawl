@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add a repo-local `graincrawl` agent skill for local archive, freshness,
+  source-unlock, and verification workflows.
+- Add the project banner image and README placement.
+
 ## v0.1.0
 
 - Scaffold `graincrawl` as a local-first Granola archive CLI.
