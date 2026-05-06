@@ -57,7 +57,8 @@ The release workflow:
 
 ## Optional Variables
 
-- `HOMEBREW_TAP_REPO`: defaults to `vincentkoc/tap`
+- `HOMEBREW_TAP_REPO`: defaults to `vincentkoc/homebrew-tap`, which installs as
+  `brew tap vincentkoc/tap`
 - `CLOUDSMITH_APT_TARGETS`: comma-separated targets like `ubuntu/jammy,debian/trixie`
 - `CLOUDSMITH_DISTRIBUTION` and `CLOUDSMITH_RELEASE`: legacy single APT target
 - `CLOUDSMITH_RPM_DISTRIBUTION`: defaults to `el`
