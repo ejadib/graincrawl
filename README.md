@@ -18,11 +18,17 @@ desktop private API token, with plaintext desktop cache as an offline fallback.
 graincrawl doctor
 graincrawl sync --source private-api
 graincrawl sync --source desktop-cache
+graincrawl status --json
+graincrawl metadata --json
 graincrawl notes --json
+graincrawl search "decision" --json
 graincrawl note get <id> --json
 graincrawl transcripts get <id> --json
 graincrawl panels get <id> --json
 graincrawl export markdown --out ./granola-notes
+graincrawl snapshot create --out ./graincrawl-snapshot
+graincrawl import ./graincrawl-snapshot
+graincrawl tui
 ```
 
 ## source policy
@@ -41,6 +47,14 @@ Supported source names:
 
 The encrypted and OPFS sources require explicit unlock commands before they can
 touch macOS Keychain, Electron safeStorage, IndexedDB, or OPFS state.
+
+## portable archives and tui
+
+`graincrawl snapshot create` and `graincrawl import` use `crawlkit/snapshot` so
+the archive can move between machines without touching Granola's live profile.
+
+`graincrawl tui` uses the shared `crawlkit/tui` browser over archived notes. Use
+`graincrawl tui --json` for a non-interactive row snapshot.
 
 ## development
 
