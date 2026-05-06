@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify module cache
+        run: GOWORK=off go mod verify
+
+      - name: Check go.mod tidy
+        run: |
+          GOWORK=off go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Install govulncheck
+        run: GOWORK=off go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
+
+      - name: Run govulncheck
+        run: GOWORK=off "$(go env GOPATH)/bin/govulncheck" ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: |
+          changed="$(gofmt -l .)"
+          if [ -n "$changed" ]; then
+            printf 'gofmt wants changes in:\n%s\n' "$changed"
+            exit 1
+          fi
+
+      - name: Vet
+        run: GOWORK=off go vet ./...
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: GOWORK=off go test -count=1 ./...
+
+      - name: Build CLI
+        run: |
+          GOWORK=off go build -trimpath \
+            -ldflags "-s -w -X github.com/vincentkoc/graincrawl/internal/buildinfo.Version=ci -X github.com/vincentkoc/graincrawl/internal/buildinfo.Commit=${GITHUB_SHA} -X github.com/vincentkoc/graincrawl/internal/buildinfo.Date=ci" \
+            -o bin/graincrawl ./cmd/graincrawl
+
+      - name: Smoke test CLI control surface
+        run: |
+          set -euo pipefail
+          output="$(./bin/graincrawl --help 2>&1)"
+          printf '%s\n' "$output"
+          printf '%s' "$output" | grep -q "graincrawl archives Granola"
+          printf '%s' "$output" | grep -q "metadata"
+          printf '%s' "$output" | grep -q "tui"
+          ./bin/graincrawl version --json | grep -q '"version": "ci"'
+          tmp="$RUNNER_TEMP/graincrawl-smoke"
+          cfg="$tmp/config.toml"
+          db="$tmp/graincrawl.db"
+          mkdir -p "$tmp"
+          GRAINCRAWL_DB_PATH="$db" ./bin/graincrawl --config "$cfg" init --json | grep -q '"config_path"'
+          ./bin/graincrawl --config "$cfg" metadata --json | grep -q '"schema_version"'
+          ./bin/graincrawl --config "$cfg" status --json | grep -q '"databases"'
+          ./bin/graincrawl --config "$cfg" tui --json | grep -q '^\['
+          ./bin/graincrawl --config "$cfg" snapshot create --out "$tmp/snapshot" --json | grep -q '"manifest"'
+
+  release-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Snapshot release build
+        uses: goreleaser/goreleaser-action@v7.2.1
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean --skip=publish

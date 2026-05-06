@@ -1,0 +1,72 @@
+version: 2
+
+project_name: graincrawl
+
+builds:
+  - id: graincrawl
+    main: ./cmd/graincrawl
+    binary: graincrawl
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+        -X github.com/vincentkoc/graincrawl/internal/buildinfo.Version={{ .Version }}
+        -X github.com/vincentkoc/graincrawl/internal/buildinfo.Commit={{ .Commit }}
+        -X github.com/vincentkoc/graincrawl/internal/buildinfo.Date={{ .Date }}
+
+archives:
+  - id: bundles
+    ids:
+      - graincrawl
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - SPEC.md
+      - config.example.toml
+
+checksum:
+  name_template: "sha256sums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^Merge pull request"
+      - "^Merge branch"
+
+nfpms:
+  - id: linux-packages
+    ids:
+      - graincrawl
+    package_name: graincrawl
+    file_name_template: "{{ .ConventionalFileName }}"
+    homepage: https://github.com/vincentkoc/graincrawl
+    maintainer: Vincent Koc <vincent@vincentkoc.com>
+    description: Local-first Granola crawler into SQLite and Markdown.
+    license: MIT
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/bin
+    section: utils
+    priority: optional
+    contents:
+      - src: ./README.md
+        dst: /usr/share/doc/graincrawl/README.md
+      - src: ./LICENSE
+        dst: /usr/share/doc/graincrawl/LICENSE
+      - src: ./config.example.toml
+        dst: /usr/share/doc/graincrawl/config.example.toml
