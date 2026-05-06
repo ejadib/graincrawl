@@ -2,9 +2,11 @@ package privateapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestClientSendsGranolaHeaders(t *testing.T) {
@@ -23,5 +25,28 @@ func TestClientSendsGranolaHeaders(t *testing.T) {
 	}
 	if gotAuth != "Bearer token" || gotWorkspace != "workspace" {
 		t.Fatalf("headers auth=%q workspace=%q", gotAuth, gotWorkspace)
+	}
+}
+
+func TestNoteFromDocumentExtractsRawNotesAndSummary(t *testing.T) {
+	title := "Planning"
+	doc := Document{
+		ID:        "doc-1",
+		Title:     &title,
+		Type:      "meeting",
+		CreatedAt: "2026-05-06T10:00:00Z",
+		UpdatedAt: "2026-05-06T10:01:00Z",
+		Notes:     json.RawMessage(`{"markdown":"## Notes\nship the archive"}`),
+		Summary:   json.RawMessage(`{"text":"summary text"}`),
+	}
+	note, err := NoteFromDocument(doc, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if note.NotesMarkdown == nil || *note.NotesMarkdown != "## Notes\nship the archive" {
+		t.Fatalf("notes markdown not extracted: %#v", note.NotesMarkdown)
+	}
+	if note.SummaryText == nil || *note.SummaryText != "summary text" {
+		t.Fatalf("summary text not extracted: %#v", note.SummaryText)
 	}
 }

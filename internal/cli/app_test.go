@@ -3,11 +3,15 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vincentkoc/graincrawl/internal/config"
+	"github.com/vincentkoc/graincrawl/internal/model"
+	"github.com/vincentkoc/graincrawl/internal/store"
 )
 
 func TestAppStatusAndSecurityCommandsUseTempConfig(t *testing.T) {
@@ -70,6 +74,77 @@ func TestAppSnapshotExportImportUseTempArchive(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"manifest"`) {
 		t.Fatalf("import output missing manifest: %s", out.String())
+	}
+}
+
+func TestTUIJSONIncludesNoteTranscriptAndPanelDetails(t *testing.T) {
+	ctx := context.Background()
+	cfgPath := writeTestConfig(t)
+	cfg, _, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(ctx, cfg.Paths.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	title := "Product Review"
+	noteText := "note body decision"
+	panelText := "panel action item"
+	if err := st.UpsertNote(ctx, model.Note{
+		ID:            "doc-1",
+		Title:         &title,
+		Type:          "meeting",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		NotesMarkdown: &noteText,
+		Source:        model.SourcePrivateAPI,
+		LastSeenAt:    now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertTranscriptChunk(ctx, model.TranscriptChunk{
+		ID:             "chunk-1",
+		DocumentID:     "doc-1",
+		StartTimestamp: now,
+		EndTimestamp:   now.Add(time.Second),
+		Source:         "mic",
+		Text:           "conversation transcript text",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertPanel(ctx, model.Panel{
+		ID:              "panel-1",
+		DocumentID:      "doc-1",
+		Title:           &title,
+		ContentMarkdown: &panelText,
+		CreatedAt:       now,
+		Source:          model.SourcePrivateAPI,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	app := App{Stdout: &out}
+	if err := app.Run(ctx, []string{"--json", "--config", cfgPath, "tui"}); err != nil {
+		t.Fatalf("tui json failed: %v", err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil {
+		t.Fatalf("parse tui rows: %v\n%s", err, out.String())
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 tui row, got %d", len(rows))
+	}
+	detail := rows[0]["detail"].(string)
+	for _, want := range []string{"## Notes", "note body decision", "## Conversation", "conversation transcript text", "## Panels", "panel action item"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("detail missing %q:\n%s", want, detail)
+		}
 	}
 }
 

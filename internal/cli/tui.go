@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -44,17 +45,24 @@ func noteRows(ctx context.Context, rt gruntime.Runtime, limit int) ([]cktui.Row,
 	}
 	rows := make([]cktui.Row, 0, len(notes))
 	for _, note := range notes {
-		rows = append(rows, noteRow(note))
+		row, err := noteRow(ctx, rt, note)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
 	}
 	return rows, nil
 }
 
-func noteRow(note model.Note) cktui.Row {
+func noteRow(ctx context.Context, rt gruntime.Runtime, note model.Note) (cktui.Row, error) {
 	title := stringValue(note.Title)
 	if title == "" {
 		title = note.ID
 	}
-	text := firstText(note.NotesMarkdown, note.NotesPlain, note.SummaryMarkdown, note.SummaryText)
+	detail, err := noteDetail(ctx, rt, note)
+	if err != nil {
+		return cktui.Row{}, err
+	}
 	fields := map[string]string{
 		"type":       note.Type,
 		"source":     string(note.Source),
@@ -73,13 +81,46 @@ func noteRow(note model.Note) cktui.Row {
 		ID:        note.ID,
 		Scope:     string(note.Source),
 		Title:     title,
-		Text:      text,
-		Detail:    text,
+		Text:      detail,
+		Detail:    detail,
 		CreatedAt: fields["created_at"],
 		UpdatedAt: fields["updated_at"],
 		Tags:      noteTags(note),
 		Fields:    fields,
+	}, nil
+}
+
+func noteDetail(ctx context.Context, rt gruntime.Runtime, note model.Note) (string, error) {
+	var b strings.Builder
+	hasNoteText := writeSection(&b, "Notes", firstText(note.NotesMarkdown, note.NotesPlain))
+	writeSection(&b, "Summary", firstText(note.SummaryMarkdown, note.SummaryText))
+	panels, err := rt.Store.ListPanels(ctx, note.ID)
+	if err != nil {
+		return "", err
 	}
+	if len(panels) > 0 {
+		if hasNoteText {
+			writeHeading(&b, "Panels")
+		} else {
+			writeHeading(&b, "Notes / Panels")
+		}
+		for _, panel := range panels {
+			fmt.Fprintf(&b, "### %s\n\n", firstNonEmpty(stringValue(panel.Title), panel.ID))
+			writeBlock(&b, firstText(panel.ContentMarkdown, panel.ContentPlain))
+		}
+	}
+	chunks, err := rt.Store.ListTranscript(ctx, note.ID)
+	if err != nil {
+		return "", err
+	}
+	if len(chunks) > 0 {
+		writeHeading(&b, "Conversation")
+		for _, chunk := range chunks {
+			fmt.Fprintf(&b, "- `%s` %s\n", chunk.StartTimestamp.Format("15:04:05"), strings.TrimSpace(chunk.Text))
+		}
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String()), nil
 }
 
 func noteTags(note model.Note) []string {
@@ -100,6 +141,40 @@ func firstText(values ...*string) string {
 		}
 		if text := strings.TrimSpace(*value); text != "" {
 			return text
+		}
+	}
+	return ""
+}
+
+func writeSection(b *strings.Builder, title, text string) bool {
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	writeHeading(b, title)
+	writeBlock(b, text)
+	return true
+}
+
+func writeHeading(b *strings.Builder, title string) {
+	if b.Len() > 0 {
+		b.WriteString("\n")
+	}
+	fmt.Fprintf(b, "## %s\n\n", title)
+}
+
+func writeBlock(b *strings.Builder, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	b.WriteString(text)
+	b.WriteString("\n\n")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
 		}
 	}
 	return ""

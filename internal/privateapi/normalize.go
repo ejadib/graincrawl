@@ -2,6 +2,7 @@ package privateapi
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/vincentkoc/graincrawl/internal/hashutil"
@@ -26,20 +27,26 @@ func NoteFromDocument(doc Document, now time.Time) (model.Note, error) {
 	if noteType == "" {
 		noteType = "meeting"
 	}
+	notesPlain := firstStringPtr(doc.NotesPlain, textFromJSON(doc.Notes, "plain", "text", "content"))
+	notesMarkdown := firstStringPtr(doc.NotesMarkdown, textFromJSON(doc.Notes, "markdown", "markdown_text", "md"))
+	summaryText := textFromJSON(doc.Summary, "plain", "text", "content", "summary")
+	summaryMarkdown := textFromJSON(doc.Summary, "markdown", "markdown_text", "md")
 	return model.Note{
-		ID:            doc.ID,
-		Title:         doc.Title,
-		Type:          noteType,
-		Status:        doc.Status,
-		CreatedAt:     created,
-		UpdatedAt:     updated,
-		DeletedAt:     deleted,
-		WorkspaceID:   doc.WorkspaceID,
-		NotesPlain:    doc.NotesPlain,
-		NotesMarkdown: doc.NotesMarkdown,
-		Source:        model.SourcePrivateAPI,
-		PayloadHash:   hashutil.JSON(doc),
-		LastSeenAt:    now,
+		ID:              doc.ID,
+		Title:           doc.Title,
+		Type:            noteType,
+		Status:          doc.Status,
+		CreatedAt:       created,
+		UpdatedAt:       updated,
+		DeletedAt:       deleted,
+		WorkspaceID:     doc.WorkspaceID,
+		NotesPlain:      notesPlain,
+		NotesMarkdown:   notesMarkdown,
+		SummaryText:     summaryText,
+		SummaryMarkdown: summaryMarkdown,
+		Source:          model.SourcePrivateAPI,
+		PayloadHash:     hashutil.JSON(doc),
+		LastSeenAt:      now,
 	}, nil
 }
 
@@ -136,4 +143,65 @@ func panelText(raw json.RawMessage) *string {
 		text += part
 	}
 	return &text
+}
+
+func firstStringPtr(values ...*string) *string {
+	for _, value := range values {
+		if value != nil && *value != "" {
+			return value
+		}
+	}
+	return nil
+}
+
+func textFromJSON(raw json.RawMessage, keys ...string) *string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var decoded any
+	if json.Unmarshal(raw, &decoded) != nil {
+		return nil
+	}
+	if text := textForKeys(decoded, keys); text != "" {
+		return &text
+	}
+	return nil
+}
+
+func textForKeys(value any, keys []string) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case map[string]any:
+		for _, key := range keys {
+			if text, ok := v[key].(string); ok && text != "" {
+				return text
+			}
+		}
+		var parts []string
+		collectText(v, &parts)
+		return strings.Join(parts, "\n")
+	default:
+		var parts []string
+		collectText(v, &parts)
+		return strings.Join(parts, "\n")
+	}
+}
+
+func collectText(value any, parts *[]string) {
+	switch v := value.(type) {
+	case map[string]any:
+		if text, ok := v["text"].(string); ok && text != "" {
+			*parts = append(*parts, text)
+		}
+		for _, key := range []string{"content", "children"} {
+			if child, ok := v[key]; ok {
+				collectText(child, parts)
+			}
+		}
+	case []any:
+		for _, item := range v {
+			collectText(item, parts)
+		}
+	}
 }

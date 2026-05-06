@@ -60,6 +60,9 @@ func syncPrivate(ctx context.Context, client privateapi.Client, st *store.Store,
 	if opts.Limit > 0 && len(all) > opts.Limit {
 		all = all[:opts.Limit]
 	}
+	if hydrated, err := client.GetDocumentsBatch(ctx, documentIDs(all)); err == nil && len(hydrated.Docs) > 0 {
+		all = mergeHydratedDocuments(all, hydrated.Docs)
+	}
 	now := time.Now().UTC()
 	for _, doc := range all {
 		if err := retainSourceObject(ctx, st, source, "document", doc.ID, doc.ID, doc, now); err != nil {
@@ -116,4 +119,32 @@ func syncPrivate(ctx context.Context, client privateapi.Client, st *store.Store,
 	completed := time.Now().UTC()
 	_, _ = st.InsertSyncRun(ctx, model.SyncRun{Source: source, StartedAt: started, CompletedAt: completed, Status: "ok", Notes: result.Notes, Transcripts: result.Transcripts, Panels: result.Panels})
 	return result, nil
+}
+
+func documentIDs(docs []privateapi.Document) []string {
+	ids := make([]string, 0, len(docs))
+	for _, doc := range docs {
+		if doc.ID != "" {
+			ids = append(ids, doc.ID)
+		}
+	}
+	return ids
+}
+
+func mergeHydratedDocuments(base, hydrated []privateapi.Document) []privateapi.Document {
+	byID := make(map[string]privateapi.Document, len(hydrated))
+	for _, doc := range hydrated {
+		if doc.ID != "" {
+			byID[doc.ID] = doc
+		}
+	}
+	out := make([]privateapi.Document, 0, len(base))
+	for _, doc := range base {
+		if full, ok := byID[doc.ID]; ok {
+			out = append(out, full)
+			continue
+		}
+		out = append(out, doc)
+	}
+	return out
 }
