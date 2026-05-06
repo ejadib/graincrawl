@@ -1,0 +1,98 @@
+package syncer
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/vincentkoc/graincrawl/internal/config"
+	"github.com/vincentkoc/graincrawl/internal/granola"
+	"github.com/vincentkoc/graincrawl/internal/model"
+	"github.com/vincentkoc/graincrawl/internal/privateapi"
+	"github.com/vincentkoc/graincrawl/internal/store"
+)
+
+func PrivateAPI(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Result, error) {
+	paths := granola.Paths(cfg.Granola.ProfilePath, cfg.Granola.AppPath)
+	_, tokens, user, err := granola.ReadSupabase(paths.Supabase)
+	if err != nil {
+		return Result{}, err
+	}
+	summary := granola.SummarizeToken(tokens, time.Now())
+	if !summary.Present {
+		return Result{}, fmt.Errorf("Granola access token not found")
+	}
+	if summary.Expired {
+		return Result{}, fmt.Errorf("Granola access token expired; open Granola or use an explicit refresh flow")
+	}
+	workspace := user.ActiveWorkspaceID
+	if workspace == "" && len(user.WorkspaceIDs) > 0 {
+		workspace = user.WorkspaceIDs[0]
+	}
+	client := privateapi.Client{
+		AccessToken:   tokens.AccessToken,
+		ClientVersion: cfg.API.ClientVersion,
+		Platform:      cfg.API.Platform,
+		WorkspaceID:   workspace,
+	}
+	return syncPrivate(ctx, client, st, opts, cfg.API.IncludeSharedWithMe)
+}
+
+func syncPrivate(ctx context.Context, client privateapi.Client, st *store.Store, opts Options, includeShared bool) (Result, error) {
+	source := model.SourcePrivateAPI
+	started := time.Now().UTC()
+	result := Result{Source: source}
+	docs, err := client.GetDocuments(ctx, privateapi.DocumentsRequest{IncludeSharedWithMe: includeShared})
+	if err != nil {
+		return result, err
+	}
+	all := append([]privateapi.Document{}, docs.Docs...)
+	all = append(all, docs.Shared...)
+	if opts.Limit > 0 && len(all) > opts.Limit {
+		all = all[:opts.Limit]
+	}
+	now := time.Now().UTC()
+	for _, doc := range all {
+		note, err := privateapi.NoteFromDocument(doc, now)
+		if err != nil {
+			return result, err
+		}
+		if err := st.UpsertNote(ctx, note); err != nil {
+			return result, err
+		}
+		result.Notes++
+		if opts.IncludeTranscripts {
+			chunks, err := client.GetDocumentTranscript(ctx, doc.ID)
+			if err == nil {
+				for _, chunk := range chunks {
+					modelChunk, err := privateapi.TranscriptToModel(chunk)
+					if err != nil {
+						return result, err
+					}
+					if err := st.UpsertTranscriptChunk(ctx, modelChunk); err != nil {
+						return result, err
+					}
+					result.Transcripts++
+				}
+			}
+		}
+		if opts.IncludePanels {
+			panels, err := client.GetDocumentPanels(ctx, doc.ID)
+			if err == nil {
+				for _, panel := range panels {
+					modelPanel, err := privateapi.PanelToModel(panel)
+					if err != nil {
+						return result, err
+					}
+					if err := st.UpsertPanel(ctx, modelPanel); err != nil {
+						return result, err
+					}
+					result.Panels++
+				}
+			}
+		}
+	}
+	completed := time.Now().UTC()
+	_, _ = st.InsertSyncRun(ctx, model.SyncRun{Source: source, StartedAt: started, CompletedAt: completed, Status: "ok", Notes: result.Notes, Transcripts: result.Transcripts, Panels: result.Panels})
+	return result, nil
+}
