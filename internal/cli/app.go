@@ -41,6 +41,14 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.runSync(ctx, stdout, flags, cmdArgs)
 	case "status":
 		return a.runStatus(ctx, stdout, flags)
+	case "notes":
+		return a.runNotes(ctx, stdout, flags, cmdArgs)
+	case "note":
+		return a.runNote(ctx, stdout, flags, cmdArgs)
+	case "transcripts":
+		return a.runTranscripts(ctx, stdout, flags, cmdArgs)
+	case "panels":
+		return a.runPanels(ctx, stdout, flags, cmdArgs)
 	case "help":
 		_, err := io.WriteString(stdout, usage)
 		return err
