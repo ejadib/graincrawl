@@ -30,11 +30,12 @@ smoke: build
 	tmp="$$(mktemp -d)"; \
 	cfg="$$tmp/config.toml"; \
 	db="$$tmp/graincrawl.db"; \
-	GRAINCRAWL_DB_PATH="$$db" ./bin/graincrawl --config "$$cfg" init --json; \
-	./bin/graincrawl --config "$$cfg" metadata --json; \
-	./bin/graincrawl --config "$$cfg" status --json; \
-	./bin/graincrawl --config "$$cfg" tui --json; \
-	./bin/graincrawl --config "$$cfg" snapshot create --out "$$tmp/snapshot" --json
+	mkdir -p "$$tmp/home" "$$tmp/xdg-config" "$$tmp/xdg-cache" "$$tmp/xdg-state"; \
+	env HOME="$$tmp/home" XDG_CONFIG_HOME="$$tmp/xdg-config" XDG_CACHE_HOME="$$tmp/xdg-cache" XDG_STATE_HOME="$$tmp/xdg-state" GRAINCRAWL_DB_PATH="$$db" ./bin/graincrawl --config "$$cfg" init --json; \
+	env HOME="$$tmp/home" XDG_CONFIG_HOME="$$tmp/xdg-config" XDG_CACHE_HOME="$$tmp/xdg-cache" XDG_STATE_HOME="$$tmp/xdg-state" ./bin/graincrawl --config "$$cfg" metadata --json; \
+	env HOME="$$tmp/home" XDG_CONFIG_HOME="$$tmp/xdg-config" XDG_CACHE_HOME="$$tmp/xdg-cache" XDG_STATE_HOME="$$tmp/xdg-state" ./bin/graincrawl --config "$$cfg" status --json; \
+	env HOME="$$tmp/home" XDG_CONFIG_HOME="$$tmp/xdg-config" XDG_CACHE_HOME="$$tmp/xdg-cache" XDG_STATE_HOME="$$tmp/xdg-state" ./bin/graincrawl --config "$$cfg" tui --json; \
+	env HOME="$$tmp/home" XDG_CONFIG_HOME="$$tmp/xdg-config" XDG_CACHE_HOME="$$tmp/xdg-cache" XDG_STATE_HOME="$$tmp/xdg-state" ./bin/graincrawl --config "$$cfg" snapshot create --out "$$tmp/snapshot" --json
 
 release-snapshot:
 	GOWORK=off goreleaser release --snapshot --clean --skip=publish

@@ -13,8 +13,9 @@ GOWORK=off go test -count=1 ./...
 make smoke
 ```
 
-The smoke target uses temp config, temp cache, and a temp SQLite database. Do
-not run distribution checks against a live personal archive.
+The smoke target uses temp `HOME`, temp XDG dirs, temp config, temp cache, and a
+temp SQLite database. Do not run distribution checks against a live personal
+archive.
 
 If GoReleaser is installed:
 
