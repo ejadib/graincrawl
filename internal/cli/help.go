@@ -16,6 +16,7 @@ Commands:
   runs                    List sync runs.
   notes                   List archived notes.
   search <query>          Search archived notes.
+  sql <query>             Run read-only SQL against the local archive.
   note get <id>           Show one archived note.
   transcripts get <id>    Show transcript chunks for a note.
   panels get <id>         Show panels for a note.
@@ -35,4 +36,5 @@ Examples:
   graincrawl sync --source private-api
   graincrawl sync --source desktop-cache
   graincrawl notes --json
+  graincrawl sql "select count(*) as notes from notes"
 `

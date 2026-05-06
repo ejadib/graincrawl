@@ -66,6 +66,7 @@ graincrawl sync --source desktop-cache
 graincrawl runs
 graincrawl notes
 graincrawl search "decision"
+graincrawl --json sql "select count(*) as notes from notes;"
 graincrawl note get <id>
 graincrawl transcripts get <id>
 graincrawl panels get <id>

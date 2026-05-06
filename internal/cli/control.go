@@ -42,13 +42,14 @@ func controlManifest(configPath string, cfg config.Config) control.Manifest {
 		DefaultCache:    cfg.Paths.CacheDir,
 		DefaultLogs:     cfg.Paths.LogDir,
 	}
-	manifest.Capabilities = []string{"metadata", "status", "doctor", "sync", "notes", "export", "snapshot", "tui"}
+	manifest.Capabilities = []string{"metadata", "status", "doctor", "sync", "notes", "sql", "export", "snapshot", "tui"}
 	manifest.Commands = map[string]control.Command{
 		"metadata":    {Title: "Metadata", Argv: []string{"graincrawl", "metadata", "--json"}, JSON: true},
 		"status":      {Title: "Status", Argv: []string{"graincrawl", "status", "--json"}, JSON: true},
 		"doctor":      {Title: "Doctor", Argv: []string{"graincrawl", "doctor", "--json"}, JSON: true},
 		"sync":        {Title: "Sync", Argv: []string{"graincrawl", "sync", "--source", cfg.Granola.PreferredSource, "--json"}, JSON: true, Mutates: true},
 		"notes":       {Title: "Notes", Argv: []string{"graincrawl", "notes", "--json"}, JSON: true},
+		"sql":         {Title: "Read-only SQL", Argv: []string{"graincrawl", "--json", "sql", "select count(*) as notes from notes"}, JSON: true},
 		"tui":         {Title: "TUI", Argv: []string{"graincrawl", "tui"}},
 		"snapshot":    {Title: "Snapshot", Argv: []string{"graincrawl", "snapshot", "create"}, Mutates: true},
 		"export":      {Title: "Markdown Export", Argv: []string{"graincrawl", "export", "markdown", "--out", "./granola-notes"}, Mutates: true},

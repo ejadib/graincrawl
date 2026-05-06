@@ -57,23 +57,21 @@ graincrawl notes --json
 graincrawl note get <id>
 graincrawl transcripts get <id>
 graincrawl panels get <id>
+graincrawl --json sql "select count(*) as notes from notes;"
 ```
 
 ## SQL
 
-`graincrawl` does not currently expose a first-class `sql` command. For exact
-local archive counts or rankings, discover the configured DB from status and
-open it read-only with SQLite.
+Use `graincrawl sql` for exact counts, joins, and ranking queries when normal
+CLI reads are too coarse. The command is read-only and supports `--json` for
+agent parsing.
 
 Useful examples:
 
 ```bash
-sqlite3 -readonly "$(graincrawl status --json | jq -r '.database_path')" \
-  "select count(*) as notes from notes;"
-sqlite3 -readonly "$(graincrawl status --json | jq -r '.database_path')" \
-  "select source, count(*) as notes from notes group by source order by notes desc;"
-sqlite3 -readonly "$(graincrawl status --json | jq -r '.database_path')" \
-  "select title, updated_at from notes order by updated_at desc limit 20;"
+graincrawl --json sql "select count(*) as notes from notes;"
+graincrawl --json sql "select source, count(*) as notes from notes group by source order by notes desc;"
+graincrawl --json sql "select title, updated_at from notes order by updated_at desc limit 20;"
 ```
 
 Do not run mutating SQL against the archive.

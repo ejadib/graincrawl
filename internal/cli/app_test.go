@@ -148,6 +148,47 @@ func TestTUIJSONIncludesNoteTranscriptAndPanelDetails(t *testing.T) {
 	}
 }
 
+func TestAppSQLRunsReadOnlyQueries(t *testing.T) {
+	ctx := context.Background()
+	cfgPath := writeTestConfig(t)
+	cfg, _, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(ctx, cfg.Paths.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC)
+	title := "Planning"
+	if err := st.UpsertNote(ctx, model.Note{
+		ID:         "doc-1",
+		Title:      &title,
+		Type:       "meeting",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Source:     model.SourcePrivateAPI,
+		LastSeenAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	app := App{Stdout: &out}
+	if err := app.Run(ctx, []string{"--json", "--config", cfgPath, "sql", "select source, count(*) as notes from notes group by source"}); err != nil {
+		t.Fatalf("sql failed: %v", err)
+	}
+	if !strings.Contains(out.String(), `"columns"`) || !strings.Contains(out.String(), `private-api`) {
+		t.Fatalf("sql json missing result: %s", out.String())
+	}
+	if err := app.Run(ctx, []string{"--config", cfgPath, "sql", "delete from notes"}); err == nil || !strings.Contains(err.Error(), "only read-only sql is allowed") {
+		t.Fatalf("expected read-only rejection, got %v", err)
+	}
+}
+
 func TestAppRejectsUnknownCommand(t *testing.T) {
 	var out bytes.Buffer
 	app := App{Stdout: &out}

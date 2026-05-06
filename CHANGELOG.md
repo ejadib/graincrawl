@@ -4,8 +4,8 @@
 
 - Add a repo-local `graincrawl` agent skill for local archive, freshness,
   source-unlock, and verification workflows.
-- Document read-only SQLite query examples in the repo-local agent skill so
-  agents can do exact local archive counts without mutating state.
+- Add `graincrawl sql` for read-only local archive queries and document
+  agent-friendly SQL examples in the repo-local skill.
 - Add the project banner image and README placement.
 
 ## v0.1.0
