@@ -55,6 +55,8 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.runUnlock(ctx, stdout, flags)
 	case "secrets":
 		return a.runSecrets(ctx, stdout, flags)
+	case "export":
+		return a.runExport(ctx, stdout, flags, cmdArgs)
 	case "help":
 		_, err := io.WriteString(stdout, usage)
 		return err

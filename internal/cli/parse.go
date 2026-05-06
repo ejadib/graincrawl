@@ -30,3 +30,10 @@ func parseLimit(args []string, fallback int) int {
 	}
 	return fallback
 }
+
+func parseOutDir(args []string) string {
+	if out, ok := flagValue(args, "--out"); ok {
+		return out
+	}
+	return ""
+}
