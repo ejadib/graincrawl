@@ -30,6 +30,6 @@ func Run(ctx context.Context, cfg config.Config, st *store.Store, opts Options) 
 		}
 		return DesktopCache(ctx, cfg, st, opts)
 	default:
-		return Result{}, fmt.Errorf("source %q is not implemented yet", opts.Source)
+		return Result{}, fmt.Errorf("source %q is disabled or unsupported in this build", opts.Source)
 	}
 }
