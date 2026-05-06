@@ -1,0 +1,32 @@
+package cli
+
+const usage = `graincrawl archives Granola notes locally.
+
+Usage:
+  graincrawl [--json] [--config <path>] <command> [args]
+
+Commands:
+  version                 Show build metadata.
+  init                    Create config and database directories.
+  doctor                  Inspect Granola and graincrawl state.
+  status                  Show archive status.
+  sync                    Sync from a source.
+  notes                   List archived notes.
+  note get <id>           Show one archived note.
+  transcripts get <id>    Show transcript chunks for a note.
+  panels get <id>         Show panels for a note.
+  sources                 Show source adapter support.
+  unlock                  Explain explicit unlock surfaces.
+  secrets                 Inspect graincrawl-managed secret state.
+  export markdown         Export notes as Markdown.
+  snapshot                Create a portable snapshot placeholder.
+  import                  Import a snapshot placeholder.
+  tui                     Open the terminal browser placeholder.
+  completion              Print shell completion placeholder.
+
+Examples:
+  graincrawl doctor --json
+  graincrawl sync --source private-api
+  graincrawl sync --source desktop-cache
+  graincrawl notes --json
+`
