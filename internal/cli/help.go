@@ -9,6 +9,7 @@ Commands:
   version                 Show build metadata.
   init                    Create config and database directories.
   doctor                  Inspect Granola and graincrawl state.
+  metadata                Print crawlkit control metadata.
   status                  Show archive status.
   sync                    Sync from a source.
   notes                   List archived notes.

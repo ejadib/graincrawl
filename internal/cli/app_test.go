@@ -13,7 +13,6 @@ import (
 func TestAppStatusAndSecurityCommandsUseTempConfig(t *testing.T) {
 	cfgPath := writeTestConfig(t)
 	for _, command := range [][]string{
-		{"--json", "--config", cfgPath, "status"},
 		{"--json", "--config", cfgPath, "sources"},
 		{"--json", "--config", cfgPath, "unlock"},
 		{"--json", "--config", cfgPath, "secrets"},
@@ -29,6 +28,19 @@ func TestAppStatusAndSecurityCommandsUseTempConfig(t *testing.T) {
 		}
 		if !strings.Contains(out.String(), `"ok": true`) {
 			t.Fatalf("%v did not return ok envelope: %s", command, out.String())
+		}
+	}
+	for _, command := range [][]string{
+		{"--json", "--config", cfgPath, "metadata"},
+		{"--json", "--config", cfgPath, "status"},
+	} {
+		var out bytes.Buffer
+		app := App{Stdout: &out}
+		if err := app.Run(context.Background(), command); err != nil {
+			t.Fatalf("%v failed: %v", command, err)
+		}
+		if !strings.Contains(out.String(), `"schema_version": "crawlkit.control.v1"`) {
+			t.Fatalf("%v did not return crawlkit control JSON: %s", command, out.String())
 		}
 	}
 }

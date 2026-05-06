@@ -37,6 +37,8 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.runInit(stdout, flags)
 	case "doctor":
 		return a.runDoctor(ctx, stdout, flags)
+	case "metadata":
+		return a.runMetadata(ctx, stdout, flags)
 	case "sync":
 		return a.runSync(ctx, stdout, flags, cmdArgs)
 	case "status":
@@ -101,15 +103,18 @@ func (a App) runStatus(ctx context.Context, w io.Writer, flags GlobalFlags) erro
 		return err
 	}
 	defer rt.Close()
-	runs, err := rt.Store.ListSyncRuns(ctx, 5)
+	status, err := rt.Store.Status(ctx)
 	if err != nil {
 		return err
 	}
 	if flags.JSON {
-		return output.WriteEnvelope(w, map[string]any{"runs": runs})
+		return output.WriteJSON(w, controlStatus(rt.ConfigPath, rt.Config, status))
 	}
 	output.PrintKV(w, "database", rt.Store.Path())
-	output.PrintKV(w, "recent_runs", len(runs))
+	output.PrintKV(w, "notes", status.Notes)
+	output.PrintKV(w, "transcripts", status.Transcripts)
+	output.PrintKV(w, "panels", status.Panels)
+	output.PrintKV(w, "sync_runs", status.SyncRuns)
 	return nil
 }
 
