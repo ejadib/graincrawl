@@ -1,0 +1,13 @@
+bin/
+dist/
+coverage.out
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+.DS_Store
+.env
+.env.*
+!.env.example
+tmp/
+.graincrawl/
