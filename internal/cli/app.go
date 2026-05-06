@@ -11,6 +11,7 @@ import (
 	"github.com/vincentkoc/graincrawl/internal/doctor"
 	"github.com/vincentkoc/graincrawl/internal/output"
 	gruntime "github.com/vincentkoc/graincrawl/internal/runtime"
+	"github.com/vincentkoc/graincrawl/internal/syncer"
 )
 
 type App struct {
@@ -36,6 +37,10 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.runInit(stdout, flags)
 	case "doctor":
 		return a.runDoctor(ctx, stdout, flags)
+	case "sync":
+		return a.runSync(ctx, stdout, flags, cmdArgs)
+	case "status":
+		return a.runStatus(ctx, stdout, flags)
 	case "help":
 		_, err := io.WriteString(stdout, usage)
 		return err
@@ -44,6 +49,44 @@ func (a App) Run(ctx context.Context, args []string) error {
 		_ = cmdArgs
 		return fmt.Errorf("unknown command %q", cmd)
 	}
+}
+
+func (a App) runSync(ctx context.Context, w io.Writer, flags GlobalFlags, args []string) error {
+	rt, err := gruntime.Open(ctx, flags.ConfigPath)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	result, err := syncer.Run(ctx, rt.Config, rt.Store, parseSyncOptions(args))
+	if err != nil {
+		return err
+	}
+	if flags.JSON {
+		return output.WriteEnvelope(w, result)
+	}
+	output.PrintKV(w, "source", result.Source)
+	output.PrintKV(w, "notes", result.Notes)
+	output.PrintKV(w, "transcripts", result.Transcripts)
+	output.PrintKV(w, "panels", result.Panels)
+	return nil
+}
+
+func (a App) runStatus(ctx context.Context, w io.Writer, flags GlobalFlags) error {
+	rt, err := gruntime.Open(ctx, flags.ConfigPath)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	runs, err := rt.Store.ListSyncRuns(ctx, 5)
+	if err != nil {
+		return err
+	}
+	if flags.JSON {
+		return output.WriteEnvelope(w, map[string]any{"runs": runs})
+	}
+	output.PrintKV(w, "database", rt.Store.Path())
+	output.PrintKV(w, "recent_runs", len(runs))
+	return nil
 }
 
 func (a App) runInit(w io.Writer, flags GlobalFlags) error {
