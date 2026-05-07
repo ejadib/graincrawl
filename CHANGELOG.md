@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bump routine Go module and GitHub Actions dependencies.
+
 - Add a repo-local `graincrawl` agent skill for local archive, freshness,
   source-unlock, and verification workflows.
 - Add `graincrawl sql` for read-only local archive queries and document
