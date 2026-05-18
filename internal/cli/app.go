@@ -6,12 +6,12 @@ import (
 	"io"
 	"time"
 
-	"github.com/vincentkoc/graincrawl/internal/buildinfo"
-	"github.com/vincentkoc/graincrawl/internal/config"
-	"github.com/vincentkoc/graincrawl/internal/doctor"
-	"github.com/vincentkoc/graincrawl/internal/output"
-	gruntime "github.com/vincentkoc/graincrawl/internal/runtime"
-	"github.com/vincentkoc/graincrawl/internal/syncer"
+	"github.com/openclaw/graincrawl/internal/buildinfo"
+	"github.com/openclaw/graincrawl/internal/config"
+	"github.com/openclaw/graincrawl/internal/doctor"
+	"github.com/openclaw/graincrawl/internal/output"
+	gruntime "github.com/openclaw/graincrawl/internal/runtime"
+	"github.com/openclaw/graincrawl/internal/syncer"
 )
 
 type App struct {
@@ -33,9 +33,12 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return err
 	}
 	cmd, cmdArgs := rest[0], rest[1:]
+	a.maybeNotifyRelease(ctx, rest, flags)
 	switch cmd {
 	case "version":
 		return a.runVersion(stdout, flags)
+	case "check-update":
+		return a.runCheckUpdate(ctx, stdout, flags, cmdArgs)
 	case "init":
 		return a.runInit(stdout, flags)
 	case "doctor":
