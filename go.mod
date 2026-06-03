@@ -1,4 +1,4 @@
-module github.com/openclaw/graincrawl
+module github.com/ejadib/graincrawl
 
 go 1.26
 
