@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/openclaw/graincrawl/internal/cli"
+	"github.com/openclaw/ejadib/internal/cli"
 )
 
 func main() {
