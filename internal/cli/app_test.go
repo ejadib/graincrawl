@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/openclaw/graincrawl/internal/config"
+	"github.com/openclaw/graincrawl/internal/granola"
 	"github.com/openclaw/graincrawl/internal/model"
 	"github.com/openclaw/graincrawl/internal/store"
 )
@@ -74,6 +77,250 @@ func TestAppGlobalVersionFlag(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "version") {
 		t.Fatalf("--version output missing version: %s", out.String())
+	}
+}
+
+func TestAppReportsEncryptedOnlyGranolaState(t *testing.T) {
+	cfgPath := writeTestConfig(t)
+	cfg, _, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cfg.Granola.ProfilePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cacheRaw := `{"cache":{"version":8,"state":{"transcripts":{}}}}`
+	if err := os.WriteFile(filepath.Join(cfg.Granola.ProfilePath, "cache-v6.json"), []byte(cacheRaw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"supabase.json.enc", "storage.dek"} {
+		if err := os.WriteFile(filepath.Join(cfg.Granola.ProfilePath, name), []byte("encrypted"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, command := range [][]string{
+		{"--json", "--config", cfgPath, "doctor"},
+		{"--config", cfgPath, "doctor"},
+		{"--json", "--config", cfgPath, "sync"},
+		{"--json", "--config", cfgPath, "sync", "--source", "desktop-cache"},
+		{"--config", cfgPath, "sync", "--source", "desktop-cache"},
+	} {
+		var out bytes.Buffer
+		app := App{Stdout: &out}
+		if err := app.Run(context.Background(), command); err != nil {
+			t.Fatalf("%v failed: %v", command, err)
+		}
+		text := out.String()
+		for _, want := range []string{"encrypted-only", "explicit", "supabase.json"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("%v output missing %q:\n%s", command, want, text)
+			}
+		}
+	}
+
+	var unlockOut bytes.Buffer
+	app := App{Stdout: &unlockOut}
+	if err := app.Run(context.Background(), []string{"--json", "--config", cfgPath, "unlock"}); err != nil {
+		t.Fatalf("unlock failed: %v", err)
+	}
+	if !strings.Contains(unlockOut.String(), "disabled") || strings.Contains(unlockOut.String(), "keychain_accessed") {
+		t.Fatalf("unlock status should remain prompt-free when disabled:\n%s", unlockOut.String())
+	}
+}
+
+func TestAppBlocksPostMigrationGranolaState(t *testing.T) {
+	cfgPath := writeTestConfig(t)
+	cfg, _, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Granola.AllowEncryptedJSON = true
+	cfg.Security.KeychainPromptMode = "explicit"
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cfg.Granola.ProfilePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"cache-v6.json.enc", "supabase.json.enc"} {
+		if err := os.WriteFile(filepath.Join(cfg.Granola.ProfilePath, name), []byte("encrypted"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	decryptCalls := 0
+	app := App{
+		DecryptEncryptedJSON: func(context.Context, string, ...string) (map[string]json.RawMessage, error) {
+			decryptCalls++
+			return nil, nil
+		},
+	}
+
+	for _, command := range [][]string{
+		{"--json", "--config", cfgPath, "doctor"},
+		{"--config", cfgPath, "doctor"},
+		{"--json", "--config", cfgPath, "unlock"},
+		{"--config", cfgPath, "unlock"},
+	} {
+		var out bytes.Buffer
+		app.Stdout = &out
+		if err := app.Run(context.Background(), command); err != nil {
+			t.Fatalf("%v failed: %v", command, err)
+		}
+		if !strings.Contains(out.String(), granola.PostMigrationStateMessage) {
+			t.Fatalf("%v output missing migration diagnostic:\n%s", command, out.String())
+		}
+		for _, forbidden := range []string{"explicit encrypted-json unlock", "current plaintext source"} {
+			if strings.Contains(out.String(), forbidden) {
+				t.Fatalf("%v output contains dead-end advice %q:\n%s", command, forbidden, out.String())
+			}
+		}
+	}
+
+	var sourcesOut bytes.Buffer
+	app.Stdout = &sourcesOut
+	if err := app.Run(context.Background(), []string{"--json", "--config", cfgPath, "sources"}); err != nil {
+		t.Fatal(err)
+	}
+	var response struct {
+		Result struct {
+			Sources []struct {
+				Source  model.Source `json:"source"`
+				Allowed bool         `json:"allowed"`
+				Notes   string       `json:"notes"`
+			} `json:"sources"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(sourcesOut.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	blocked := map[model.Source]bool{
+		model.SourcePrivateAPI:   false,
+		model.SourceDesktopCache: false,
+	}
+	for _, source := range response.Result.Sources {
+		if _, ok := blocked[source.Source]; !ok {
+			continue
+		}
+		if source.Allowed || source.Notes != granola.PostMigrationStateMessage {
+			t.Fatalf("source support = %#v", source)
+		}
+		blocked[source.Source] = true
+	}
+	for source, seen := range blocked {
+		if !seen {
+			t.Fatalf("sources output did not include blocked %s: %s", source, sourcesOut.String())
+		}
+	}
+
+	for _, command := range [][]string{
+		{"--config", cfgPath, "sync", "--source", "private-api"},
+		{"--config", cfgPath, "sync", "--source", "private-api", "--unlock", "encrypted-json"},
+		{"--config", cfgPath, "sync", "--source", "desktop-cache"},
+		{"--config", cfgPath, "sync", "--source", "desktop-cache", "--unlock", "encrypted-json"},
+		{"--config", cfgPath, "unlock", "encrypted-json"},
+	} {
+		var out bytes.Buffer
+		app.Stdout = &out
+		err := app.Run(context.Background(), command)
+		if err == nil {
+			t.Fatalf("%v succeeded; want nonzero command error", command)
+		}
+		if !strings.Contains(err.Error(), granola.PostMigrationStateMessage) {
+			t.Fatalf("%v error missing migration diagnostic: %v", command, err)
+		}
+		for _, forbidden := range []string{"explicit encrypted-json unlock", "current plaintext source"} {
+			if strings.Contains(err.Error(), forbidden) {
+				t.Fatalf("%v error contains dead-end advice %q: %v", command, forbidden, err)
+			}
+		}
+	}
+	if decryptCalls != 0 {
+		t.Fatalf("post-migration commands invoked decryptor %d times", decryptCalls)
+	}
+}
+
+func TestAppExplicitEncryptedJSONUnlockRedactsPayload(t *testing.T) {
+	cfgPath := writeTestConfig(t)
+	cfg, _, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Granola.AllowEncryptedJSON = true
+	cfg.Security.KeychainPromptMode = "explicit"
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cfg.Granola.ProfilePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"storage.dek", "cache-v6.json.enc", "supabase.json.enc"} {
+		if err := os.WriteFile(filepath.Join(cfg.Granola.ProfilePath, name), []byte("encrypted"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cacheRaw := json.RawMessage(`{"cache":{"version":8,"state":{"documents":{"doc1":{"id":"doc1","created_at":"2026-05-06T01:00:00Z","updated_at":"2026-05-06T02:00:00Z","title":"Sensitive title","notes_plain":"Sensitive note"}},"transcripts":{}}}}`)
+	supabaseRaw := json.RawMessage(`{"workos_tokens":"{\"access_token\":\"synthetic-secret-token\",\"refresh_token\":\"synthetic-refresh-token\",\"obtained_at\":4102444800000,\"expires_in\":3600}","user_info":"{\"email\":\"private@example.com\"}"}`)
+	decryptCalls := 0
+	app := App{
+		DecryptEncryptedJSON: func(_ context.Context, _ string, names ...string) (map[string]json.RawMessage, error) {
+			decryptCalls++
+			return map[string]json.RawMessage{
+				"cache-v6.json.enc": cacheRaw,
+				"supabase.json.enc": supabaseRaw,
+			}, nil
+		},
+	}
+
+	var doctorOut bytes.Buffer
+	app.Stdout = &doctorOut
+	if err := app.Run(context.Background(), []string{"--json", "--config", cfgPath, "doctor"}); err != nil {
+		t.Fatal(err)
+	}
+	if decryptCalls != 0 {
+		t.Fatal("doctor invoked encrypted-json decryptor")
+	}
+
+	var unlockOut bytes.Buffer
+	app.Stdout = &unlockOut
+	if err := app.Run(context.Background(), []string{"--json", "--config", cfgPath, "unlock", "encrypted-json"}); err != nil {
+		t.Fatal(err)
+	}
+	if decryptCalls != 1 {
+		t.Fatalf("expected one explicit decryptor call, got %d", decryptCalls)
+	}
+	text := unlockOut.String()
+	for _, want := range []string{`"surface": "encrypted-json"`, `"document_count": 1`, `"present": true`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("unlock output missing %q:\n%s", want, text)
+		}
+	}
+	for _, forbidden := range []string{"synthetic-secret-token", "synthetic-refresh-token", "Sensitive title", "Sensitive note", "private@example.com"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("unlock output leaked %q:\n%s", forbidden, text)
+		}
+	}
+}
+
+func TestAppFormerEncryptedJSONHelperCommandCannotDecrypt(t *testing.T) {
+	decryptCalls := 0
+	var out bytes.Buffer
+	app := App{
+		Stdout: &out,
+		DecryptEncryptedJSON: func(context.Context, string, ...string) (map[string]json.RawMessage, error) {
+			decryptCalls++
+			return nil, nil
+		},
+	}
+	err := app.Run(context.Background(), []string{"_encrypted-json-helper"})
+	if err == nil || !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("expected former helper command rejection, got %v", err)
+	}
+	if decryptCalls != 0 {
+		t.Fatalf("former helper command invoked decryptor %d times", decryptCalls)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("former helper command wrote output: %q", out.String())
 	}
 }
 
@@ -209,6 +456,171 @@ func TestAppSQLRunsReadOnlyQueries(t *testing.T) {
 	}
 }
 
+func TestAppPreservesFlagLikeCommandArguments(t *testing.T) {
+	ctx := context.Background()
+	cfgPath := writeTestConfig(t)
+	cfg, _, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(ctx, cfg.Paths.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	title := "Flag Check"
+	if err := st.UpsertNote(ctx, model.Note{
+		ID:         "doc-flag",
+		Title:      &title,
+		Type:       "meeting",
+		CreatedAt:  time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC),
+		UpdatedAt:  time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC),
+		Source:     model.SourcePrivateAPI,
+		LastSeenAt: time.Date(2026, 5, 6, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var sqlOut bytes.Buffer
+	app := App{Stdout: &sqlOut}
+	if err := app.Run(ctx, []string{"--json", "--config", cfgPath, "sql", "select '--json' as flag"}); err != nil {
+		t.Fatalf("sql with flag-like literal failed: %v", err)
+	}
+	if !strings.Contains(sqlOut.String(), "--json") {
+		t.Fatalf("sql output lost flag-like literal: %s", sqlOut.String())
+	}
+
+	var searchOut bytes.Buffer
+	app.Stdout = &searchOut
+	if err := app.Run(ctx, []string{"--json", "--config", cfgPath, "search", "--config"}); err != nil {
+		t.Fatalf("search with flag-like term failed: %v", err)
+	}
+	if !strings.Contains(searchOut.String(), "--config") {
+		t.Fatalf("search output lost flag-like query: %s", searchOut.String())
+	}
+}
+
+func TestAppAcceptsGlobalFlagsAfterCommand(t *testing.T) {
+	cfgPath := writeTestConfig(t)
+	var out bytes.Buffer
+	app := App{Stdout: &out}
+
+	if err := app.Run(context.Background(), []string{"--config", cfgPath, "status", "--json"}); err != nil {
+		t.Fatalf("status with trailing --json failed: %v", err)
+	}
+	if !strings.Contains(out.String(), `"schema_version"`) || !strings.Contains(out.String(), `"counts"`) {
+		t.Fatalf("status with trailing --json did not emit JSON: %s", out.String())
+	}
+}
+
+func TestAppPreservesTrailingJSONSearchArgument(t *testing.T) {
+	cfgPath := writeTestConfig(t)
+	var out bytes.Buffer
+	app := App{Stdout: &out}
+
+	if err := app.Run(context.Background(), []string{"--config", cfgPath, "search", "--json"}); err != nil {
+		t.Fatalf("search with literal trailing --json failed: %v", err)
+	}
+}
+
+func TestAppAcceptsTrailingJSONAfterSearchQuery(t *testing.T) {
+	cfgPath := writeTestConfig(t)
+	var out bytes.Buffer
+	app := App{Stdout: &out}
+
+	if err := app.Run(context.Background(), []string{"--config", cfgPath, "search", "needle", "--json"}); err != nil {
+		t.Fatalf("search with trailing --json failed: %v", err)
+	}
+	if !strings.Contains(out.String(), `"ok": true`) || !strings.Contains(out.String(), `"notes"`) {
+		t.Fatalf("search with trailing --json did not emit JSON: %s", out.String())
+	}
+}
+
+func TestParseGlobalFlagsPreservesFreeFormJSONArguments(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantJSON bool
+		wantRest []string
+	}{
+		{
+			name:     "search literal",
+			args:     []string{"search", "--json"},
+			wantRest: []string{"search", "--json"},
+		},
+		{
+			name:     "search json output prefix",
+			args:     []string{"--json", "search", "--json"},
+			wantJSON: true,
+			wantRest: []string{"search", "--json"},
+		},
+		{
+			name:     "search trailing json output",
+			args:     []string{"search", "needle", "--json"},
+			wantJSON: true,
+			wantRest: []string{"search", "needle"},
+		},
+		{
+			name:     "sql trailing argument",
+			args:     []string{"sql", "select 1", "--json"},
+			wantRest: []string{"sql", "select 1", "--json"},
+		},
+		{
+			name:     "sql json output prefix",
+			args:     []string{"--json", "sql", "select 1", "--json"},
+			wantJSON: true,
+			wantRest: []string{"sql", "select 1", "--json"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flags, rest := parseGlobalFlags(tt.args)
+			if flags.JSON != tt.wantJSON {
+				t.Fatalf("JSON flag = %v, want %v", flags.JSON, tt.wantJSON)
+			}
+			if !slices.Equal(rest, tt.wantRest) {
+				t.Fatalf("command arguments changed: got %q want %q", rest, tt.wantRest)
+			}
+		})
+	}
+}
+
+func TestParseGlobalFlagsDoesNotConsumeCommandConfigArgument(t *testing.T) {
+	flags, rest := parseGlobalFlags([]string{"search", "--config", "foo"})
+	if flags.ConfigPath != "" {
+		t.Fatalf("command argument became global config path: %q", flags.ConfigPath)
+	}
+	want := []string{"search", "--config", "foo"}
+	if !slices.Equal(rest, want) {
+		t.Fatalf("command arguments changed: got %q want %q", rest, want)
+	}
+}
+
+func TestAppInitDoesNotOverwriteExistingConfig(t *testing.T) {
+	root := t.TempDir()
+	cfgPath := filepath.Join(root, "config.toml")
+	sentinel := []byte("sentinel = true\n")
+	if err := os.WriteFile(cfgPath, sentinel, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	app := App{Stdout: &out}
+	err := app.Run(context.Background(), []string{"--config", cfgPath, "init", "--json"})
+	if err == nil || !strings.Contains(err.Error(), "config already exists") {
+		t.Fatalf("expected config exists error, got %v", err)
+	}
+	got, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, sentinel) {
+		t.Fatalf("init overwrote existing config: %q", string(got))
+	}
+}
+
 func TestAppRejectsUnknownCommand(t *testing.T) {
 	var out bytes.Buffer
 	app := App{Stdout: &out}
@@ -218,12 +630,43 @@ func TestAppRejectsUnknownCommand(t *testing.T) {
 }
 
 func TestParseSyncOptionsKeepsSkipFlags(t *testing.T) {
-	opts := parseSyncOptions([]string{"--source", "desktop-cache", "--limit", "2", "--no-transcripts", "--no-panels"})
+	opts, err := parseSyncOptions([]string{"--source", "desktop-cache", "--limit", "2", "--unlock", "encrypted-json", "--no-transcripts", "--no-panels"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if opts.Source != model.SourceDesktopCache || opts.Limit != 2 {
 		t.Fatalf("bad source or limit: %#v", opts)
 	}
+	if opts.UnlockSurface != "encrypted-json" {
+		t.Fatalf("unlock surface = %q", opts.UnlockSurface)
+	}
 	if !opts.SkipTranscripts || !opts.SkipPanels {
 		t.Fatalf("expected skip flags, got %#v", opts)
+	}
+}
+
+func TestParseSyncOptionsRejectsInvalidLimit(t *testing.T) {
+	for _, args := range [][]string{
+		{"--limit", "0"},
+		{"--limit", "-1"},
+		{"--limit", "many"},
+	} {
+		if _, err := parseSyncOptions(args); err == nil {
+			t.Fatalf("parseSyncOptions(%v) succeeded with invalid limit", args)
+		}
+	}
+}
+
+func TestShellCompletionsIncludeEncryptedJSONUnlock(t *testing.T) {
+	for shell, completion := range map[string]string{
+		"bash": bashCompletion(),
+		"zsh":  zshCompletion(),
+	} {
+		for _, want := range []string{"--unlock", "encrypted-json"} {
+			if !strings.Contains(completion, want) {
+				t.Fatalf("%s completion missing %q", shell, want)
+			}
+		}
 	}
 }
 

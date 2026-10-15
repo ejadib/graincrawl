@@ -9,13 +9,14 @@ import (
 )
 
 type Report struct {
-	ConfigPath string                `json:"config_path"`
-	DBPath     string                `json:"db_path"`
-	GranolaApp granola.AppInfo       `json:"granola_app"`
-	Profile    granola.ProfilePaths  `json:"profile"`
-	Files      FileReport            `json:"files"`
-	Token      *granola.TokenSummary `json:"token,omitempty"`
-	Unlock     UnlockReport          `json:"unlock"`
+	ConfigPath  string                `json:"config_path"`
+	DBPath      string                `json:"db_path"`
+	GranolaApp  granola.AppInfo       `json:"granola_app"`
+	Profile     granola.ProfilePaths  `json:"profile"`
+	Files       FileReport            `json:"files"`
+	Token       *granola.TokenSummary `json:"token,omitempty"`
+	Unlock      UnlockReport          `json:"unlock"`
+	Diagnostics []Diagnostic          `json:"diagnostics,omitempty"`
 }
 
 type FileReport struct {
@@ -31,8 +32,15 @@ type FileReport struct {
 
 type UnlockReport struct {
 	EncryptedJSONRequired bool `json:"encrypted_json_required"`
+	PostMigrationState    bool `json:"post_migration_state"`
 	OPFSPresent           bool `json:"opfs_present"`
 	KeychainMayPrompt     bool `json:"keychain_may_prompt"`
+}
+
+type Diagnostic struct {
+	Code     string `json:"code"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
 }
 
 func Run(cfg config.Config, configPath string, now time.Time) Report {
@@ -58,8 +66,22 @@ func Run(cfg config.Config, configPath string, now time.Time) Report {
 		report.Token = &summary
 	}
 	report.Unlock.EncryptedJSONRequired = granola.EncryptedNewer(paths.CacheV6, paths.CacheV6Encrypted) || granola.EncryptedNewer(paths.Supabase, paths.SupabaseEncrypted)
+	report.Unlock.PostMigrationState = granola.PostMigrationState(paths)
 	report.Unlock.OPFSPresent = report.Files.IndexedDB.Exists && report.Files.FileSystem.Exists
-	report.Unlock.KeychainMayPrompt = report.Unlock.EncryptedJSONRequired || cfg.Granola.AllowEncryptedJSON || cfg.Granola.AllowOPFS
+	report.Unlock.KeychainMayPrompt = false
+	if report.Unlock.PostMigrationState {
+		report.Diagnostics = append(report.Diagnostics, Diagnostic{
+			Code:     "granola_dek_keychain_migration",
+			Severity: "error",
+			Message:  granola.PostMigrationDiagnostic(report.GranolaApp.Version),
+		})
+	} else if granola.EncryptedOnlyState(paths) {
+		report.Diagnostics = append(report.Diagnostics, Diagnostic{
+			Code:     "granola_encrypted_only_state",
+			Severity: "warning",
+			Message:  granola.EncryptedOnlyStateMessage,
+		})
+	}
 	return report
 }
 

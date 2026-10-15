@@ -3,14 +3,22 @@
 `graincrawl` ships through GitHub Releases, Homebrew tap updates, and optional
 Cloudsmith APT/RPM repositories.
 
+macOS binaries require macOS 13 Ventura or newer, matching the
+[Go 1.27 minimum](https://go.dev/doc/go1.27#darwin). The GoReleaser builds disable
+CGO and use Go's default deployment target. Before publishing, inspect both
+Darwin architectures from a snapshot or draft release:
+
+```bash
+otool -l path/to/darwin_amd64/graincrawl | grep -A3 LC_BUILD_VERSION
+otool -l path/to/darwin_arm64/graincrawl | grep -A3 LC_BUILD_VERSION
+```
+
+Both must report `minos 13.0`; a higher target would exclude supported Macs.
+
 ## Local Checks
 
 ```bash
-GOWORK=off go mod tidy
-git diff --exit-code -- go.mod go.sum
-GOWORK=off go vet ./...
-GOWORK=off go test -count=1 ./...
-make smoke
+make check
 graincrawl check-update --json
 ```
 
@@ -18,49 +26,79 @@ The smoke target uses temp `HOME`, temp XDG dirs, temp config, temp cache, and a
 temp SQLite database. Do not run distribution checks against a live personal
 archive.
 
-If GoReleaser is installed:
+For credential-free development artifacts:
 
 ```bash
-make release-snapshot
+make snapshot
 ```
 
 That creates local snapshot archives, checksums, `.deb`, and `.rpm` packages
-under `dist/` without publishing.
+under `dist/` without publishing or requiring signing credentials. The target
+uses a pinned GoReleaser module version, so Go can fetch the tool when needed.
 
-## Release Notes
+## Unified Release
 
-GitHub uses Release Drafter to auto-label PRs and generate release notes from
-merged pull requests. The release workflow publishes the Release Drafter output
-for the pushed tag, then uploads the GoReleaser artifacts to that release.
-
-## Tagged Release
-
-Create and push a semver tag:
+Official releases use `.github/workflows/release-unified.yml`, which calls the
+fleet release pipeline pinned to its compatible `@v1` contract. Dispatch it
+from the protected `main` head with the changelog version already prepared:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+make release
+# release refuses locally and prints:
+gh workflow run release-unified.yml --repo openclaw/graincrawl -f version=X.Y.Z
 ```
 
-The release workflow:
+The pipeline freezes an annotated `v<version>` tag, runs the GoReleaser matrix,
+signs every Darwin binary as
+`org.openclaw.graincrawl.graincrawl` with
+`Developer ID Application: OpenClaw Foundation (FWJYW4S8P8)`, notarizes the
+signed bytes, and independently verifies both macOS architectures before
+publishing. Release notes are the byte-exact dated `CHANGELOG.md` section.
 
-1. runs tests
-2. builds GoReleaser artifacts
-3. publishes Release Drafter notes for the tag
-4. uploads GitHub release assets
-5. optionally publishes APT/RPM packages to Cloudsmith
-6. updates the Homebrew tap
+GoReleaser's nFPM configuration is auto-detected. The generated `.deb` and
+`.rpm` files are included as top-level release assets and bound into
+`ASSET-INVENTORY.json` and `SHA256SUMS` alongside the signed archives. The
+pipeline then hands exact archive names and digests to
+`openclaw/homebrew-tap` and opens a closeout pull request restoring the next
+`## Unreleased` section.
+
+## Cloudsmith Packages
+
+Cloudsmith publishing remains an explicit post-release operation. The APT and
+RPM workflows download their package type from the published tag and verify
+each package against the pipeline's `SHA256SUMS` before upload:
+
+```bash
+gh workflow run publish-apt.yml -f tag_name=v0.4.2
+gh workflow run publish-rpm.yml -f tag_name=v0.4.2
+```
+
+## Legacy Manual Tools
+
+`release-legacy.yml`, `release-assets.yml`, and `homebrew-tap.yml` are
+manual-only fallbacks. They exist to validate or recover releases made by the
+old local signing path and never trigger from tags or release publication.
+`make release-artifacts` remains an alias for the fail-closed `release` target,
+and `scripts/package-graincrawl-release.sh` also points maintainers to
+`release-unified.yml`; the former local path could sign macOS binaries without
+notarizing them. `make release-snapshot` remains an alias for the credential-free
+`snapshot` target. `make verify-release TAG=vX.Y.Z ARCHIVES='path ...'` remains
+available for inspecting legacy archives and their per-archive `.sha256`
+sidecars, including Apple notarization assessment, but it is not a publishing
+path.
 
 ## Secrets
 
-- `HOMEBREW_TAP_GITHUB_TOKEN`: optional; when set, updates the tap repository
-  automatically
-- `CLOUDSMITH_API_KEY`: optional; enables package publishing
+- `MACOS_SIGNING_P12` and `MACOS_SIGNING_P12_PASSWORD`: Foundation Developer ID
+  identity for the ephemeral CI keychain
+- `ASC_KEY_ID`, `ASC_ISSUER_ID`, and `ASC_PRIVATE_KEY_P8`: notarization API
+  credentials
+- `HOMEBREW_TAP_TOKEN`: token with Actions access to
+  `openclaw/homebrew-tap`
+- `CLOUDSMITH_API_KEY`: optional; enables manual APT/RPM publishing
 
 ## Optional Variables
 
-- `HOMEBREW_TAP_REPO`: defaults to `openclaw/homebrew-tap`, which installs as
-  `brew install openclaw/tap/graincrawl`
 - `CODEQL_ENABLED`: set to `true` after code scanning is enabled for the
   repository
 - `CLOUDSMITH_APT_TARGETS`: comma-separated targets like `ubuntu/jammy,debian/trixie`
@@ -70,15 +108,15 @@ The release workflow:
 
 ## Manual Reruns
 
-If Cloudsmith publish fails after GitHub release assets exist:
+If Cloudsmith publishing needs to be retried after the GitHub release exists:
 
 ```bash
-gh workflow run publish-apt.yml -f tag_name=v0.1.0
-gh workflow run publish-rpm.yml -f tag_name=v0.1.0
+gh workflow run publish-apt.yml -f tag_name=v0.4.2
+gh workflow run publish-rpm.yml -f tag_name=v0.4.2
 ```
 
-If the Homebrew tap update fails:
+If the unified Homebrew handoff needs a manual fallback:
 
 ```bash
-gh workflow run homebrew-tap.yml -f tag_name=v0.1.0
+gh workflow run homebrew-tap.yml -f tag_name=v0.4.2
 ```

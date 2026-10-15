@@ -1,0 +1,57 @@
+name: Release Validation (legacy manual)
+
+# Legacy credential-free snapshot validation only. Official releases use
+# release-unified.yml and the reusable OpenClaw release pipeline.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Existing signed tag to validate (for example: v0.3.2)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.tag_name }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate tag
+        env:
+          TAG: ${{ inputs.tag_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: ${TAG}"
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/${TAG}^{commit}")"
+
+      - name: Run tests
+        run: GOWORK=off go test -count=1 ./...
+
+      - name: Build credential-free snapshot
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean --skip=publish

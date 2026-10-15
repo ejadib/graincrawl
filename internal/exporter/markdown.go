@@ -2,6 +2,7 @@ package exporter
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,9 +31,24 @@ func Markdown(ctx context.Context, st *store.Store, outDir string, limit int) (M
 		return MarkdownResult{}, err
 	}
 	result := MarkdownResult{OutDir: outDir}
-	for _, note := range notes {
-		path := filepath.Join(outDir, noteFilename(note))
-		if err := os.WriteFile(path, []byte(renderNote(ctx, st, note)), 0o600); err != nil {
+	paths := make([]string, len(notes))
+	seen := make(map[string]bool, len(notes))
+	for i, note := range notes {
+		name := noteFilename(note)
+		key := strings.ToLower(name)
+		if seen[key] {
+			return MarkdownResult{}, fmt.Errorf("duplicate Markdown output filename")
+		}
+		seen[key] = true
+		paths[i] = filepath.Join(outDir, name)
+	}
+	for i, note := range notes {
+		path := paths[i]
+		text, err := renderNote(ctx, st, note)
+		if err != nil {
+			return MarkdownResult{}, err
+		}
+		if err := writeMarkdown(path, text); err != nil {
 			return MarkdownResult{}, err
 		}
 		result.Files = append(result.Files, path)
@@ -41,7 +57,24 @@ func Markdown(ctx context.Context, st *store.Store, outDir string, limit int) (M
 	return result, nil
 }
 
-func renderNote(ctx context.Context, st *store.Store, note model.Note) string {
+func writeMarkdown(path, text string) error {
+	file, err := os.CreateTemp(filepath.Dir(path), ".graincrawl-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	if _, err := file.WriteString(text); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	// Replace the directory entry only after writing a complete private file.
+	return os.Rename(file.Name(), path)
+}
+
+func renderNote(ctx context.Context, st *store.Store, note model.Note) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n\n", valueOr(note.Title, note.ID))
 	fmt.Fprintf(&b, "- id: `%s`\n", note.ID)
@@ -55,14 +88,27 @@ func renderNote(ctx context.Context, st *store.Store, note model.Note) string {
 		b.WriteString(text)
 		b.WriteString("\n\n")
 	}
-	if chunks, err := st.ListTranscript(ctx, note.ID); err == nil && len(chunks) > 0 {
+	if summary := valueOr(note.SummaryMarkdown, valueOr(note.SummaryText, "")); summary != "" {
+		b.WriteString("## Summary\n\n")
+		b.WriteString(summary)
+		b.WriteString("\n\n")
+	}
+	chunks, err := st.ListTranscript(ctx, note.ID)
+	if err != nil {
+		return "", fmt.Errorf("read transcript for Markdown export: %w", err)
+	}
+	if len(chunks) > 0 {
 		b.WriteString("## Transcript\n\n")
 		for _, chunk := range chunks {
 			fmt.Fprintf(&b, "- `%s` %s\n", chunk.StartTimestamp.Format("15:04:05"), chunk.Text)
 		}
 		b.WriteString("\n")
 	}
-	if panels, err := st.ListPanels(ctx, note.ID); err == nil && len(panels) > 0 {
+	panels, err := st.ListPanels(ctx, note.ID)
+	if err != nil {
+		return "", fmt.Errorf("read panels for Markdown export: %w", err)
+	}
+	if len(panels) > 0 {
 		b.WriteString("## Panels\n\n")
 		for _, panel := range panels {
 			fmt.Fprintf(&b, "### %s\n\n", valueOr(panel.Title, panel.ID))
@@ -75,13 +121,13 @@ func renderNote(ctx context.Context, st *store.Store, note model.Note) string {
 			}
 		}
 	}
-	return b.String()
+	return b.String(), nil
 }
 
 func noteFilename(note model.Note) string {
 	title := safeFilename(valueOr(note.Title, note.ID))
 	date := note.CreatedAt.Format("2006-01-02")
-	return fmt.Sprintf("%s-%s.md", date, title)
+	return fmt.Sprintf("%s-%s-%x.md", date, title, sha256.Sum256([]byte(note.ID)))
 }
 
 var filenameCleaner = regexp.MustCompile(`[^A-Za-z0-9._-]+`)

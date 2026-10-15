@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/openclaw/graincrawl/internal/cachev6"
@@ -12,14 +13,37 @@ import (
 )
 
 func DesktopCache(ctx context.Context, cfg config.Config, st *store.Store, opts Options) (Result, error) {
-	source := model.SourceDesktopCache
-	started := time.Now().UTC()
-	result := Result{Source: source}
 	paths := granola.Paths(cfg.Granola.ProfilePath, cfg.Granola.AppPath)
+	encryptedOnlyMessage := ""
+	if granola.EncryptedOnlyState(paths) {
+		encryptedOnlyMessage = granola.EncryptedOnlyStateMessage
+	}
+	if granola.EncryptedCacheState(paths) {
+		result := Result{Source: model.SourceDesktopCache, Message: encryptedOnlyMessage}
+		return result, fmt.Errorf("desktop-cache source requires plaintext cache-v6.json: %s", encryptedOnlyMessage)
+	}
 	file, err := cachev6.Read(paths.CacheV6)
 	if err != nil {
+		result := Result{Source: model.SourceDesktopCache, Message: encryptedOnlyMessage}
+		if encryptedOnlyMessage != "" {
+			return result, fmt.Errorf("%w: %s", err, encryptedOnlyMessage)
+		}
 		return result, err
 	}
+	return importDesktopCache(ctx, st, opts, file, model.SourceDesktopCache, encryptedOnlyMessage)
+}
+
+func encryptedDesktopCache(ctx context.Context, st *store.Store, opts Options, raw []byte) (Result, error) {
+	file, err := cachev6.Parse(raw)
+	if err != nil {
+		return Result{Source: model.SourceEncryptedJSON}, err
+	}
+	return importDesktopCache(ctx, st, opts, file, model.SourceEncryptedJSON, "unlocked encrypted cache-v6.json in memory")
+}
+
+func importDesktopCache(ctx context.Context, st *store.Store, opts Options, file cachev6.File, source model.Source, message string) (Result, error) {
+	started := time.Now().UTC()
+	result := Result{Source: source, Message: message}
 	now := time.Now().UTC()
 	count := 0
 	for _, doc := range file.Cache.State.Documents {
@@ -35,6 +59,10 @@ func DesktopCache(ctx context.Context, cfg config.Config, st *store.Store, opts 
 		note, err := cachev6.NoteFromDocument(doc, now)
 		if err != nil {
 			return result, err
+		}
+		note.Source = source
+		if note.DeletedAt != nil {
+			note.DeletionSource = string(source)
 		}
 		if err := st.UpsertNote(ctx, note); err != nil {
 			return result, err
@@ -56,8 +84,16 @@ func DesktopCache(ctx context.Context, cfg config.Config, st *store.Store, opts 
 				result.Transcripts++
 			}
 		}
+		if note.DeletedAt != nil {
+			if err := st.TombstoneDocument(ctx, doc.ID, store.Deletion{
+				At:     *note.DeletedAt,
+				Source: source,
+				Reason: store.DeletionReasonSourceField,
+			}); err != nil {
+				return result, err
+			}
+			result.Deleted++
+		}
 	}
-	completed := time.Now().UTC()
-	_, _ = st.InsertSyncRun(ctx, model.SyncRun{Source: source, StartedAt: started, CompletedAt: completed, Status: "ok", Notes: result.Notes, Transcripts: result.Transcripts, Panels: result.Panels})
-	return result, nil
+	return completeSync(ctx, st, started, result)
 }

@@ -10,7 +10,6 @@ import (
 	"github.com/openclaw/crawlkit/control"
 	"github.com/openclaw/graincrawl/internal/config"
 	"github.com/openclaw/graincrawl/internal/output"
-	gruntime "github.com/openclaw/graincrawl/internal/runtime"
 	"github.com/openclaw/graincrawl/internal/store"
 )
 
@@ -42,13 +41,14 @@ func controlManifest(configPath string, cfg config.Config) control.Manifest {
 		DefaultCache:    cfg.Paths.CacheDir,
 		DefaultLogs:     cfg.Paths.LogDir,
 	}
-	manifest.Capabilities = []string{"metadata", "status", "doctor", "sync", "desktop-cache", "notes", "sql", "export", "snapshot", "tui"}
+	manifest.Capabilities = []string{"metadata", "status", "doctor", "sync", "public-api", "desktop-cache", "notes", "sql", "export", "snapshot", "tui"}
 	manifest.Commands = map[string]control.Command{
 		"metadata":             {Title: "Metadata", Argv: []string{"graincrawl", "metadata", "--json"}, JSON: true},
 		"status":               {Title: "Status", Argv: []string{"graincrawl", "status", "--json"}, JSON: true},
 		"check-update":         {Title: "Check for updates", Argv: []string{"graincrawl", "check-update", "--json"}, JSON: true},
 		"doctor":               {Title: "Doctor", Argv: []string{"graincrawl", "doctor", "--json"}, JSON: true},
 		"sync":                 {Title: "Sync", Argv: []string{"graincrawl", "sync", "--source", cfg.Granola.PreferredSource, "--json"}, JSON: true, Mutates: true},
+		"public-api-sync":      {Title: "Public API sync", Argv: []string{"graincrawl", "sync", "--source", "public-api", "--json"}, JSON: true, Mutates: true},
 		"desktop-cache-import": {Title: "Desktop cache import", Argv: []string{"graincrawl", "sync", "--source", "desktop-cache", "--json"}, JSON: true, Mutates: true},
 		"notes":                {Title: "Notes", Argv: []string{"graincrawl", "notes", "--json"}, JSON: true},
 		"sql":                  {Title: "Read-only SQL", Argv: []string{"graincrawl", "--json", "sql", "select count(*) as notes from notes"}, JSON: true},
@@ -100,17 +100,4 @@ func fileSize(path string) int64 {
 		return 0
 	}
 	return info.Size()
-}
-
-func openRuntimeStatus(ctx context.Context, configPath string) (gruntime.Runtime, store.Status, error) {
-	rt, err := gruntime.Open(ctx, configPath)
-	if err != nil {
-		return gruntime.Runtime{}, store.Status{}, err
-	}
-	status, err := rt.Store.Status(ctx)
-	if err != nil {
-		_ = rt.Close()
-		return gruntime.Runtime{}, store.Status{}, err
-	}
-	return rt, status, nil
 }

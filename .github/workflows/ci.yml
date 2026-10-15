@@ -23,10 +23,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -40,7 +40,7 @@ jobs:
           git diff --exit-code -- go.mod go.sum
 
       - name: Install govulncheck
-        run: GOWORK=off go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
+        run: GOWORK=off go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
 
       - name: Run govulncheck
         run: GOWORK=off "$(go env GOPATH)/bin/govulncheck" ./...
@@ -50,10 +50,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -69,15 +69,27 @@ jobs:
       - name: Vet
         run: GOWORK=off go vet ./...
 
+      - name: Install deadcode
+        run: GOWORK=off go install golang.org/x/tools/cmd/deadcode@v0.51.0
+
+      - name: Deadcode
+        run: |
+          output_file=$(mktemp)
+          GOWORK=off "$(go env GOPATH)/bin/deadcode" -test ./... > "$output_file"
+          if [ -s "$output_file" ]; then
+            cat "$output_file"
+            exit 1
+          fi
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -99,34 +111,36 @@ jobs:
           printf '%s' "$output" | grep -q "graincrawl archives Granola"
           printf '%s' "$output" | grep -q "metadata"
           printf '%s' "$output" | grep -q "tui"
-          ./bin/graincrawl version --json | grep -q '"version": "ci"'
+          version_output="$(./bin/graincrawl --json version)"
+          printf '%s\n' "$version_output"
+          printf '%s\n' "$version_output" | grep -q '"version"'
           tmp="$RUNNER_TEMP/graincrawl-smoke"
           cfg="$tmp/config.toml"
           db="$tmp/graincrawl.db"
           mkdir -p "$tmp/home" "$tmp/xdg-config" "$tmp/xdg-cache" "$tmp/xdg-state"
-          env HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/xdg-config" XDG_CACHE_HOME="$tmp/xdg-cache" XDG_STATE_HOME="$tmp/xdg-state" GRAINCRAWL_DB_PATH="$db" ./bin/graincrawl --config "$cfg" init --json | grep -q '"config_path"'
-          env HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/xdg-config" XDG_CACHE_HOME="$tmp/xdg-cache" XDG_STATE_HOME="$tmp/xdg-state" ./bin/graincrawl --config "$cfg" metadata --json | grep -q '"schema_version"'
-          env HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/xdg-config" XDG_CACHE_HOME="$tmp/xdg-cache" XDG_STATE_HOME="$tmp/xdg-state" ./bin/graincrawl --config "$cfg" status --json | grep -q '"databases"'
-          env HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/xdg-config" XDG_CACHE_HOME="$tmp/xdg-cache" XDG_STATE_HOME="$tmp/xdg-state" ./bin/graincrawl --config "$cfg" tui --json | grep -q '^\['
-          env HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/xdg-config" XDG_CACHE_HOME="$tmp/xdg-cache" XDG_STATE_HOME="$tmp/xdg-state" ./bin/graincrawl --config "$cfg" snapshot create --out "$tmp/snapshot" --json | grep -q '"manifest"'
+          env HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/xdg-config" XDG_CACHE_HOME="$tmp/xdg-cache" XDG_STATE_HOME="$tmp/xdg-state" GRAINCRAWL_DB_PATH="$db" ./bin/graincrawl --config "$cfg" --json init | grep -q '"config_path"'
+          env HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/xdg-config" XDG_CACHE_HOME="$tmp/xdg-cache" XDG_STATE_HOME="$tmp/xdg-state" ./bin/graincrawl --config "$cfg" --json metadata | grep -q '"schema_version"'
+          env HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/xdg-config" XDG_CACHE_HOME="$tmp/xdg-cache" XDG_STATE_HOME="$tmp/xdg-state" ./bin/graincrawl --config "$cfg" --json status | grep -q '"databases"'
+          env HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/xdg-config" XDG_CACHE_HOME="$tmp/xdg-cache" XDG_STATE_HOME="$tmp/xdg-state" ./bin/graincrawl --config "$cfg" --json tui | grep -q '^\['
+          env HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/xdg-config" XDG_CACHE_HOME="$tmp/xdg-cache" XDG_STATE_HOME="$tmp/xdg-state" ./bin/graincrawl --config "$cfg" --json snapshot create --out "$tmp/snapshot" | grep -q '"manifest"'
 
   release-check:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Snapshot release build
-        uses: goreleaser/goreleaser-action@v7.2.1
+        uses: goreleaser/goreleaser-action@v7.2.3
         with:
           distribution: goreleaser
           version: "~> v2"

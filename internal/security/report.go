@@ -2,6 +2,7 @@ package security
 
 import (
 	"github.com/openclaw/graincrawl/internal/config"
+	"github.com/openclaw/graincrawl/internal/granola"
 	"github.com/openclaw/graincrawl/internal/model"
 )
 
@@ -31,8 +32,9 @@ type SecretReport struct {
 	Message            string `json:"message"`
 }
 
-func Sources(cfg config.Config) []SourceSupport {
-	return []SourceSupport{
+func Sources(cfg config.Config, paths granola.ProfilePaths) []SourceSupport {
+	postMigration := granola.PostMigrationState(paths)
+	sources := []SourceSupport{
 		{
 			Source:      model.SourcePrivateAPI,
 			Allowed:     cfg.Granola.AllowPrivateAPI,
@@ -52,37 +54,64 @@ func Sources(cfg config.Config) []SourceSupport {
 			Allowed:     cfg.Granola.AllowEncryptedJSON,
 			Implemented: false,
 			NeedsSecret: true,
-			Notes:       "requires explicit companion/keychain unlock",
+			Notes:       "unlock surface only; use --unlock encrypted-json with private-api or desktop-cache",
 		},
 		{
 			Source:      model.SourceOPFS,
 			Allowed:     cfg.Granola.AllowOPFS,
 			Implemented: false,
 			NeedsSecret: true,
-			Notes:       "requires explicit companion/keychain unlock",
+			Notes:       "unsupported in this build; future explicit unlock/import must be security reviewed",
 		},
 		{
 			Source:      model.SourcePublicAPI,
 			Allowed:     cfg.Granola.AllowPublicAPI,
-			Implemented: false,
+			Implemented: true,
 			NeedsSecret: true,
-			Notes:       "official API is currently limited compared with local archive goals",
+			Notes:       "official read-only API; key is read from GRANOLA_PUBLIC_API_KEY and never persisted",
 		},
 	}
+	if postMigration {
+		for i := range sources {
+			switch sources[i].Source {
+			case model.SourcePrivateAPI, model.SourceDesktopCache:
+				// Match sync: only the source whose own state is encrypted is
+				// blocked, so advertised support cannot contradict behavior.
+				if !granola.SourceStateEncrypted(paths, sources[i].Source) {
+					continue
+				}
+				sources[i].Allowed = false
+				sources[i].Notes = granola.PostMigrationStateMessage
+			case model.SourceEncryptedJSON:
+				sources[i].Allowed = false
+				sources[i].Notes = granola.PostMigrationStateMessage
+			}
+		}
+	}
+	return sources
 }
 
-func Unlock(cfg config.Config) UnlockReport {
-	needsCompanion := cfg.Granola.AllowEncryptedJSON || cfg.Granola.AllowOPFS
+func Unlock(cfg config.Config, postMigration bool) UnlockReport {
 	mode := cfg.Security.KeychainPromptMode
+	promptAllowed := PromptAllowed(mode)
+	message := unlockMessage(cfg.Granola.AllowEncryptedJSON, cfg.Granola.AllowOPFS, mode)
+	if postMigration {
+		promptAllowed = false
+		message = granola.PostMigrationStateMessage
+	}
 	return UnlockReport{
 		KeychainPromptMode: mode,
 		PersistHelperKeys:  cfg.Security.PersistHelperKeys,
 		EncryptedJSON:      cfg.Granola.AllowEncryptedJSON,
 		OPFS:               cfg.Granola.AllowOPFS,
-		RequiresCompanion:  needsCompanion,
-		PromptAllowed:      mode == "ask" || mode == "always",
-		Message:            unlockMessage(needsCompanion, mode),
+		RequiresCompanion:  false,
+		PromptAllowed:      promptAllowed,
+		Message:            message,
 	}
+}
+
+func PromptAllowed(mode string) bool {
+	return mode == "explicit" || mode == "ask" || mode == "always"
 }
 
 func Secrets(cfg config.Config) SecretReport {
@@ -91,16 +120,19 @@ func Secrets(cfg config.Config) SecretReport {
 		PersistHelperKeys:  cfg.Security.PersistHelperKeys,
 		KeychainPromptMode: cfg.Security.KeychainPromptMode,
 		GranolaKeychain:    "external",
-		Message:            "graincrawl does not persist Granola tokens; encrypted sources must unlock through an explicit helper flow",
+		Message:            "graincrawl does not persist Granola tokens or public API keys; encrypted sources require an explicit unlock flow",
 	}
 }
 
-func unlockMessage(needsCompanion bool, mode string) string {
-	if !needsCompanion {
+func unlockMessage(encryptedJSON, opfs bool, mode string) string {
+	if !encryptedJSON && !opfs {
 		return "encrypted JSON and OPFS sources are disabled; no keychain prompt is expected"
 	}
-	if mode == "ask" || mode == "always" {
-		return "encrypted sources are enabled and may trigger an explicit keychain prompt through a companion helper"
+	if encryptedJSON && PromptAllowed(mode) {
+		return "encrypted JSON unlock is available only through an explicit unlock command; OPFS remains unsupported"
 	}
-	return "encrypted sources are enabled but keychain prompting is disabled until keychain_prompt_mode is changed"
+	if encryptedJSON {
+		return "encrypted JSON is enabled, but the current keychain prompt mode blocks unlock; OPFS remains unsupported"
+	}
+	return "OPFS is configured but unsupported in this build; no companion or keychain prompt will run"
 }

@@ -1,15 +1,9 @@
-name: Update Homebrew Tap
+name: Update Homebrew Tap (legacy manual)
+
+# Manual fallback only. The unified release pipeline dispatches the tap with
+# exact inventory-derived asset names and SHA-256 digests.
 
 on:
-  workflow_call:
-    inputs:
-      tag_name:
-        description: "Release tag to sync (for example: v0.1.0)"
-        required: true
-        type: string
-  release:
-    types:
-      - published
   workflow_dispatch:
     inputs:
       tag_name:
@@ -26,7 +20,7 @@ env:
 jobs:
   update-tap:
     runs-on: ubuntu-latest
-    if: startsWith(github.event.release.tag_name || inputs.tag_name, 'v')
+    if: startsWith(inputs.tag_name, 'v')
     env:
       TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'openclaw/homebrew-tap' }}
       FORMULA: graincrawl
@@ -34,7 +28,12 @@ jobs:
       - name: Resolve release tag
         run: |
           set -euo pipefail
-          echo "RELEASE_TAG=${{ github.event.release.tag_name || inputs.tag_name }}" >> "$GITHUB_ENV"
+          release_tag="${{ inputs.tag_name }}"
+          if [[ ! "${release_tag}" =~ ^v[0-9A-Za-z._-]+$ ]]; then
+            echo "::error::Invalid release tag: ${release_tag}"
+            exit 1
+          fi
+          echo "RELEASE_TAG=${release_tag}" >> "$GITHUB_ENV"
 
       - name: Dispatch tap formula update
         env:
@@ -71,14 +70,17 @@ jobs:
 
           run_id=""
           for _ in {1..30}; do
-            run_id=$(gh run list \
+            if ! run_json="$(gh run list \
               --repo "${TAP_REPO}" \
               --workflow update-formula.yml \
               --branch main \
               --event workflow_dispatch \
               --limit 20 \
-              --json databaseId,displayTitle \
-              --jq ".[] | select(.displayTitle == \"${expected_title}\") | .databaseId" | head -n1)
+              --json databaseId,displayTitle)"; then
+              sleep 5
+              continue
+            fi
+            run_id="$(jq -r --arg expected_title "${expected_title}" '.[] | select(.displayTitle == $expected_title) | .databaseId' <<<"${run_json}" | head -n1)"
             if [ -n "${run_id}" ]; then
               break
             fi

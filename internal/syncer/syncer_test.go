@@ -2,12 +2,17 @@ package syncer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/openclaw/graincrawl/internal/config"
+	"github.com/openclaw/graincrawl/internal/encryptedjson"
+	"github.com/openclaw/graincrawl/internal/granola"
 	"github.com/openclaw/graincrawl/internal/model"
 	"github.com/openclaw/graincrawl/internal/store"
 )
@@ -99,6 +104,349 @@ func TestRunAcceptsEmptyVersion8DesktopCache(t *testing.T) {
 	}
 }
 
+func TestRunDesktopCacheCascadesExplicitDeletedAtTombstone(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	profile := filepath.Join(root, "Granola")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"cache":{"version":8,"state":{"documents":{"doc1":{"id":"doc1","created_at":"2026-05-06T01:00:00Z","updated_at":"2026-05-06T02:00:00Z","deleted_at":"2026-05-07T03:00:00Z","type":"meeting"}},"transcripts":{"doc1":[{"document_id":"doc1","start_timestamp":"2026-05-06T01:00:01Z","end_timestamp":"2026-05-06T01:00:02Z","text":"retained","source":"microphone","id":"c1","is_final":true}]}}}}`
+	if err := os.WriteFile(filepath.Join(profile, "cache-v6.json"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(ctx, filepath.Join(root, "graincrawl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := config.Config{
+		Granola: config.GranolaConfig{ProfilePath: profile, AllowDesktopCache: true},
+		Sync:    config.SyncConfig{DefaultLimit: 100, IncludeTranscripts: true},
+	}
+	result, err := Run(ctx, cfg, st, Options{Source: model.SourceDesktopCache})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", result.Deleted)
+	}
+	note, ok, err := st.GetNote(ctx, "doc1")
+	if err != nil || !ok || note.DeletedAt == nil {
+		t.Fatalf("note tombstone: ok=%v err=%v note=%#v", ok, err, note)
+	}
+	if note.DeletionSource != string(model.SourceDesktopCache) || note.DeletionReason != store.DeletionReasonSourceField {
+		t.Fatalf("note deletion metadata: %#v", note)
+	}
+	chunks, err := st.ListTranscript(ctx, "doc1")
+	if err != nil || len(chunks) != 1 || chunks[0].DeletedAt == nil {
+		t.Fatalf("transcript tombstone: chunks=%#v err=%v", chunks, err)
+	}
+	objects, err := st.ListSourceObjects(ctx, "", 10)
+	if err != nil || len(objects) != 2 {
+		t.Fatalf("source tombstones: objects=%#v err=%v", objects, err)
+	}
+	for _, object := range objects {
+		if object.DeletedAt == nil || object.DeletionSource != string(model.SourceDesktopCache) {
+			t.Fatalf("source object not tombstoned: %#v", object)
+		}
+	}
+}
+
+func TestRunExplainsEncryptedOnlyDesktopCache(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	profile := filepath.Join(root, "Granola")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"cache":{"version":8,"state":{"transcripts":{}}}}`
+	if err := os.WriteFile(filepath.Join(profile, "cache-v6.json"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"supabase.json.enc", "storage.dek"} {
+		if err := os.WriteFile(filepath.Join(profile, name), []byte("encrypted"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := store.Open(ctx, filepath.Join(root, "graincrawl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := config.Config{
+		Granola: config.GranolaConfig{
+			ProfilePath:       profile,
+			AllowDesktopCache: true,
+		},
+		Sync: config.SyncConfig{DefaultLimit: 100},
+	}
+	result, err := Run(ctx, cfg, st, Options{Source: model.SourceDesktopCache})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Notes != 0 || !strings.Contains(result.Message, "encrypted-only") {
+		t.Fatalf("expected encrypted-only diagnostic on empty sync, got %#v", result)
+	}
+	runs, err := st.ListSyncRuns(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].Message != result.Message {
+		t.Fatalf("expected diagnostic recorded with sync run, got %#v", runs)
+	}
+}
+
+func TestRunDefaultSyncFallsBackWithEncryptedOnlyDiagnostic(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	profile := filepath.Join(root, "Granola")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"cache":{"version":8,"state":{"documents":{"doc1":{"id":"doc1","created_at":"2026-05-06T01:00:00Z","updated_at":"2026-05-06T02:00:00Z","title":"Cached","type":"meeting","notes_plain":"cached plain"}},"transcripts":{}}}}`
+	if err := os.WriteFile(filepath.Join(profile, "cache-v6.json"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	supabasePath := filepath.Join(profile, "supabase.json")
+	supabaseEncPath := filepath.Join(profile, "supabase.json.enc")
+	supabaseRaw := `{"workos_tokens":"{\"access_token\":\"stale\",\"obtained_at\":4102444800000,\"expires_in\":3600}"}`
+	if err := os.WriteFile(supabasePath, []byte(supabaseRaw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"supabase.json.enc", "storage.dek"} {
+		if err := os.WriteFile(filepath.Join(profile, name), []byte("encrypted"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	makeNewer(t, supabasePath, supabaseEncPath)
+	st, err := store.Open(ctx, filepath.Join(root, "graincrawl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := config.Config{
+		Granola: config.GranolaConfig{
+			ProfilePath:       profile,
+			PreferredSource:   "private-api",
+			AllowPrivateAPI:   true,
+			AllowDesktopCache: true,
+		},
+		Sync: config.SyncConfig{DefaultLimit: 100},
+	}
+	result, err := Run(ctx, cfg, st, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Source != model.SourceDesktopCache || result.Notes != 1 || !strings.Contains(result.Message, "encrypted-only") {
+		t.Fatalf("expected default sync fallback with encrypted-only diagnostic, got %#v", result)
+	}
+}
+
+func TestRunRejectsNewerEncryptedDesktopCache(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	profile := filepath.Join(root, "Granola")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(profile, "cache-v6.json")
+	cacheEncPath := filepath.Join(profile, "cache-v6.json.enc")
+	raw := `{"cache":{"version":8,"state":{"documents":{"doc1":{"id":"doc1","created_at":"2026-05-06T01:00:00Z","updated_at":"2026-05-06T02:00:00Z","title":"Cached","type":"meeting","notes_plain":"cached plain"}},"transcripts":{}}}}`
+	if err := os.WriteFile(cachePath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cacheEncPath, []byte("encrypted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profile, "storage.dek"), []byte("wrapped"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	makeNewer(t, cachePath, cacheEncPath)
+	st, err := store.Open(ctx, filepath.Join(root, "graincrawl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := config.Config{
+		Granola: config.GranolaConfig{
+			ProfilePath:       profile,
+			AllowDesktopCache: true,
+		},
+		Sync: config.SyncConfig{DefaultLimit: 100},
+	}
+	result, err := Run(ctx, cfg, st, Options{Source: model.SourceDesktopCache})
+	if err == nil {
+		t.Fatalf("expected stale plaintext cache rejection, got %#v", result)
+	}
+	if !strings.Contains(err.Error(), "cache-v6.json") || !strings.Contains(err.Error(), "encrypted-only") {
+		t.Fatalf("expected encrypted-cache diagnostic error, got %v", err)
+	}
+}
+
+func TestRunBlocksPostMigrationLocalSourcesBeforeDecrypt(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	profile := filepath.Join(root, "Granola")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{encryptedjson.CacheFile, encryptedjson.SupabaseFile} {
+		if err := os.WriteFile(filepath.Join(profile, name), []byte("encrypted"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st, err := store.Open(ctx, filepath.Join(root, "graincrawl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := config.Config{
+		Granola: config.GranolaConfig{
+			ProfilePath:        profile,
+			AllowPrivateAPI:    true,
+			AllowDesktopCache:  true,
+			AllowEncryptedJSON: true,
+		},
+		Security: config.SecurityConfig{KeychainPromptMode: "explicit"},
+	}
+	decryptCalls := 0
+	for _, source := range []model.Source{model.SourcePrivateAPI, model.SourceDesktopCache} {
+		result, err := Run(ctx, cfg, st, Options{
+			Source:        source,
+			UnlockSurface: "encrypted-json",
+			DecryptEncryptedJSON: func(context.Context, string, ...string) (map[string]json.RawMessage, error) {
+				decryptCalls++
+				return nil, errors.New("decryptor must not run")
+			},
+		})
+		if err == nil {
+			t.Fatalf("%s sync succeeded with migrated state: %#v", source, result)
+		}
+		if result.Source != source || result.Message != granola.PostMigrationStateMessage {
+			t.Fatalf("%s result = %#v", source, result)
+		}
+		if !strings.Contains(err.Error(), string(source)+" source is blocked") || !strings.Contains(err.Error(), granola.PostMigrationStateMessage) {
+			t.Fatalf("%s error = %v", source, err)
+		}
+	}
+	if decryptCalls != 0 {
+		t.Fatalf("decryptor called %d times", decryptCalls)
+	}
+}
+
+func TestRunAllowsPlaintextSourceWhenOnlyOtherStateIsEncrypted(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	profile := filepath.Join(root, "Granola")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Migrated profile (no storage.dek) whose encrypted file belongs to the
+	// OTHER source: desktop-cache must still read its usable plaintext cache.
+	if err := os.WriteFile(filepath.Join(profile, encryptedjson.SupabaseFile), []byte("encrypted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"cache":{"version":6,"state":{"documents":{"doc1":{"id":"doc1","created_at":"2026-05-06T01:00:00Z","updated_at":"2026-05-06T02:00:00Z","title":"Test","type":"meeting","notes_plain":"plain"}}}}}`
+	if err := os.WriteFile(filepath.Join(profile, "cache-v6.json"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(ctx, filepath.Join(root, "graincrawl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := config.Config{
+		Granola: config.GranolaConfig{
+			ProfilePath:       profile,
+			AllowPrivateAPI:   true,
+			AllowDesktopCache: true,
+		},
+		Security: config.SecurityConfig{KeychainPromptMode: "explicit"},
+	}
+	result, err := Run(ctx, cfg, st, Options{Source: model.SourceDesktopCache})
+	if err != nil {
+		t.Fatalf("desktop-cache with usable plaintext cache must not be blocked: %v", err)
+	}
+	if result.Message == granola.PostMigrationStateMessage {
+		t.Fatalf("plaintext desktop-cache reported as migration-blocked: %#v", result)
+	}
+}
+
+func TestRunMigratedImplicitSyncWithoutAnyCacheReportsMigrationBlock(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	profile := filepath.Join(root, "Granola")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Migrated profile with encrypted supabase and NO cache file at all: the
+	// fallback must not be selected just because no encrypted cache exists.
+	if err := os.WriteFile(filepath.Join(profile, encryptedjson.SupabaseFile), []byte("encrypted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(ctx, filepath.Join(root, "graincrawl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := config.Config{
+		Granola: config.GranolaConfig{
+			ProfilePath:       profile,
+			PreferredSource:   string(model.SourcePrivateAPI),
+			AllowPrivateAPI:   true,
+			AllowDesktopCache: true,
+		},
+		Security: config.SecurityConfig{KeychainPromptMode: "explicit"},
+	}
+	result, err := Run(ctx, cfg, st, Options{})
+	if err == nil {
+		t.Fatalf("migrated profile without cache should fail: %#v", result)
+	}
+	if result.Message != granola.PostMigrationStateMessage || !strings.Contains(err.Error(), "source is blocked") {
+		t.Fatalf("expected migration diagnostic, got result=%#v err=%v", result, err)
+	}
+}
+
+func TestRunImplicitPrivateAPIFallsBackToPlaintextCacheWhenMigrated(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	profile := filepath.Join(root, "Granola")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Migrated profile: supabase is encrypted (private-api unusable) but the
+	// desktop cache is still plaintext, so an implicit sync must fall back.
+	if err := os.WriteFile(filepath.Join(profile, encryptedjson.SupabaseFile), []byte("encrypted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	raw := `{"cache":{"version":6,"state":{"documents":{"doc1":{"id":"doc1","created_at":"2026-05-06T01:00:00Z","updated_at":"2026-05-06T02:00:00Z","title":"Test","type":"meeting","notes_plain":"plain"}}}}}`
+	if err := os.WriteFile(filepath.Join(profile, "cache-v6.json"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(ctx, filepath.Join(root, "graincrawl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := config.Config{
+		Granola: config.GranolaConfig{
+			ProfilePath:       profile,
+			PreferredSource:   string(model.SourcePrivateAPI),
+			AllowPrivateAPI:   true,
+			AllowDesktopCache: true,
+		},
+		Security: config.SecurityConfig{KeychainPromptMode: "explicit"},
+	}
+	result, err := Run(ctx, cfg, st, Options{})
+	if err != nil {
+		t.Fatalf("implicit sync should fall back to the plaintext desktop cache: %v", err)
+	}
+	if result.Source != model.SourceDesktopCache {
+		t.Fatalf("implicit sync source = %q, want desktop-cache", result.Source)
+	}
+}
+
 func TestRunFallsBackToDesktopCacheForImplicitExpiredPrivateAPI(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -137,5 +485,249 @@ func TestRunFallsBackToDesktopCacheForImplicitExpiredPrivateAPI(t *testing.T) {
 	}
 	if _, err := Run(ctx, cfg, st, Options{Source: model.SourcePrivateAPI}); !errors.Is(err, ErrPrivateAPITokenExpired) {
 		t.Fatalf("explicit private-api should still fail with token expiry, got %v", err)
+	}
+}
+
+func TestRunFallsBackToDesktopCacheWhenPrivateAPICredentialsAreMissing(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	profile := filepath.Join(root, "Granola")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cacheRaw := `{"cache":{"version":8,"state":{"documents":{"doc1":{"id":"doc1","created_at":"2026-08-01T01:00:00Z","updated_at":"2026-08-01T02:00:00Z","title":"Synthetic","type":"meeting","notes_plain":"synthetic"}},"transcripts":{}}}}`
+	if err := os.WriteFile(filepath.Join(profile, "cache-v6.json"), []byte(cacheRaw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(ctx, filepath.Join(root, "graincrawl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC)
+	body, summary := "API body", "API summary"
+	if err := st.UpsertNote(ctx, model.Note{
+		ID: "doc1", Type: "meeting", CreatedAt: now, UpdatedAt: now,
+		LastSeenAt: now, Source: model.SourcePrivateAPI, NotesPlain: &body, SummaryText: &summary,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		Granola: config.GranolaConfig{
+			ProfilePath:       profile,
+			PreferredSource:   "private-api",
+			AllowPrivateAPI:   true,
+			AllowDesktopCache: true,
+		},
+		Sync: config.SyncConfig{DefaultLimit: 100},
+	}
+	result, err := Run(ctx, cfg, st, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Source != model.SourceDesktopCache || result.Notes != 1 {
+		t.Fatalf("expected implicit sync to import the desktop cache, got %#v", result)
+	}
+	note, ok, err := st.GetNote(ctx, "doc1")
+	if err != nil || !ok || note.Source != model.SourcePrivateAPI || !note.UpdatedAt.Equal(now) || note.NotesPlain == nil || *note.NotesPlain != body || note.SummaryText == nil || *note.SummaryText != summary {
+		t.Fatalf("fallback replaced canonical API data: %+v %v", note, err)
+	}
+	var retained int
+	if err := st.DB().QueryRowContext(ctx, "SELECT count(*) FROM source_objects WHERE source = 'desktop-cache' AND source_id = 'doc1'").Scan(&retained); err != nil || retained != 1 {
+		t.Fatalf("fallback observation missing: count=%d err=%v", retained, err)
+	}
+	if _, err := Run(ctx, cfg, st, Options{Source: model.SourcePrivateAPI}); !errors.Is(err, ErrPrivateAPITokenNotFound) {
+		t.Fatalf("explicit private-api should report missing authentication, got %v", err)
+	} else if strings.Contains(err.Error(), profile) {
+		t.Fatalf("explicit private-api diagnostic exposed the profile path: %v", err)
+	}
+}
+
+func TestRunImportsEncryptedDesktopCacheOnlyWithExplicitUnlock(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	profile := filepath.Join(root, "Granola")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(profile, "cache-v6.json")
+	cacheEncPath := filepath.Join(profile, encryptedjson.CacheFile)
+	if err := os.WriteFile(cachePath, []byte(`{"cache":{"version":8,"state":{"documents":{},"transcripts":{}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cacheEncPath, []byte("encrypted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profile, "storage.dek"), []byte("wrapped"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	makeNewer(t, cachePath, cacheEncPath)
+	st, err := store.Open(ctx, filepath.Join(root, "graincrawl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := config.Config{
+		Granola: config.GranolaConfig{
+			ProfilePath:        profile,
+			AllowDesktopCache:  true,
+			AllowEncryptedJSON: true,
+		},
+		Security: config.SecurityConfig{KeychainPromptMode: "explicit"},
+		Sync:     config.SyncConfig{DefaultLimit: 100},
+	}
+	cacheRaw := json.RawMessage(`{"cache":{"version":8,"state":{"documents":{"doc1":{"id":"doc1","created_at":"2026-05-06T01:00:00Z","updated_at":"2026-05-06T02:00:00Z","title":"Encrypted","type":"meeting","notes_plain":"private"}},"transcripts":{}}}}`)
+	calls := 0
+	result, err := Run(ctx, cfg, st, Options{
+		Source:        model.SourceDesktopCache,
+		UnlockSurface: "encrypted-json",
+		DecryptEncryptedJSON: func(_ context.Context, _ string, names ...string) (map[string]json.RawMessage, error) {
+			calls++
+			if len(names) != 1 || names[0] != encryptedjson.CacheFile {
+				t.Fatalf("unexpected requested files: %v", names)
+			}
+			return map[string]json.RawMessage{encryptedjson.CacheFile: cacheRaw}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || result.Source != model.SourceEncryptedJSON || result.Notes != 1 {
+		t.Fatalf("unexpected encrypted import result: calls=%d result=%#v", calls, result)
+	}
+	status, err := st.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Notes != 1 {
+		t.Fatalf("expected one archived note, got %#v", status)
+	}
+}
+
+func TestRunEncryptedUnlockRequiresConfigApproval(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	st, err := store.Open(ctx, filepath.Join(root, "graincrawl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := config.Config{
+		Granola: config.GranolaConfig{
+			ProfilePath:       filepath.Join(root, "Granola"),
+			AllowDesktopCache: true,
+		},
+		Security: config.SecurityConfig{KeychainPromptMode: "explicit"},
+	}
+	_, err = Run(ctx, cfg, st, Options{
+		Source:        model.SourceDesktopCache,
+		UnlockSurface: "encrypted-json",
+		DecryptEncryptedJSON: func(context.Context, string, ...string) (map[string]json.RawMessage, error) {
+			t.Fatal("decryptor should not run without config approval")
+			return nil, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "disabled in config") {
+		t.Fatalf("expected config rejection, got %v", err)
+	}
+}
+
+func TestRunEncryptedSupabaseChecksDecryptedToken(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	profile := filepath.Join(root, "Granola")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profile, encryptedjson.SupabaseFile), []byte("encrypted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(profile, "cache-v6.json")
+	cacheEncryptedPath := filepath.Join(profile, encryptedjson.CacheFile)
+	if err := os.WriteFile(cachePath, []byte(`{"cache":{"version":8,"state":{"transcripts":{}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cacheEncryptedPath, []byte("encrypted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(profile, "storage.dek"), []byte("wrapped"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	makeNewer(t, cachePath, cacheEncryptedPath)
+	st, err := store.Open(ctx, filepath.Join(root, "graincrawl.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := config.Config{
+		Granola: config.GranolaConfig{
+			ProfilePath:        profile,
+			PreferredSource:    "private-api",
+			AllowPrivateAPI:    true,
+			AllowDesktopCache:  true,
+			AllowEncryptedJSON: true,
+		},
+		Security: config.SecurityConfig{KeychainPromptMode: "explicit"},
+		Sync:     config.SyncConfig{DefaultLimit: 100},
+	}
+	expired := json.RawMessage(`{"workos_tokens":"{\"access_token\":\"synthetic-expired\",\"obtained_at\":0,\"expires_in\":1}"}`)
+	cache := json.RawMessage(`{"cache":{"version":8,"state":{"transcripts":{}}}}`)
+	decryptCalls := 0
+	decrypt := func(_ context.Context, _ string, names ...string) (map[string]json.RawMessage, error) {
+		decryptCalls++
+		if decryptCalls == 1 && (len(names) != 2 || names[0] != encryptedjson.SupabaseFile || names[1] != encryptedjson.CacheFile) {
+			t.Fatalf("implicit fallback should batch encrypted auth and cache, got %v", names)
+		}
+		if decryptCalls == 2 && (len(names) != 1 || names[0] != encryptedjson.SupabaseFile) {
+			t.Fatalf("explicit private-api should request only encrypted auth, got %v", names)
+		}
+		files := make(map[string]json.RawMessage, len(names))
+		for _, name := range names {
+			switch name {
+			case encryptedjson.SupabaseFile:
+				files[name] = append(json.RawMessage(nil), expired...)
+			case encryptedjson.CacheFile:
+				files[name] = append(json.RawMessage(nil), cache...)
+			default:
+				t.Fatalf("unexpected requested file: %s", name)
+			}
+		}
+		return files, nil
+	}
+	result, err := Run(ctx, cfg, st, Options{
+		UnlockSurface:        "encrypted-json",
+		DecryptEncryptedJSON: decrypt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Source != model.SourceEncryptedJSON {
+		t.Fatalf("expected implicit encrypted token expiry to fall back to encrypted cache, got %#v", result)
+	}
+	if decryptCalls != 1 {
+		t.Fatalf("expected one batched decrypt for implicit fallback, got %d", decryptCalls)
+	}
+	_, err = Run(ctx, cfg, st, Options{
+		Source:               model.SourcePrivateAPI,
+		UnlockSurface:        "encrypted-json",
+		DecryptEncryptedJSON: decrypt,
+	})
+	if !errors.Is(err, ErrPrivateAPITokenExpired) {
+		t.Fatalf("expected explicit decrypted token expiry, got %v", err)
+	}
+	if decryptCalls != 2 {
+		t.Fatalf("expected one decrypt per command, got %d total", decryptCalls)
+	}
+}
+
+func makeNewer(t *testing.T, olderPath, newerPath string) {
+	t.Helper()
+	older := time.Now().Add(-2 * time.Hour)
+	newer := time.Now().Add(-1 * time.Hour)
+	if err := os.Chtimes(olderPath, older, older); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newerPath, newer, newer); err != nil {
+		t.Fatal(err)
 	}
 }

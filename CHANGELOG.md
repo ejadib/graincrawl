@@ -1,5 +1,144 @@
 # Changelog
 
+## Unreleased
+
+- Build with Go 1.27.2 to include standard-library security fixes required by the release vulnerability gate.
+
+- Match Unicode case consistently when searching note titles, bodies, summaries, transcripts, and panels, while preserving literal search terms. Thanks @SebTardif.
+- Update go-strftime to v1.1.0, deadcode tooling to v0.51.0, and TruffleHog to v3.99.0, retaining the Go 1.27.1 minimum.
+
+## 0.4.5 - 2026-10-01
+
+**Highlights:** Refresh SQLite and CrawlKit while keeping the Go 1.27.1 minimum.
+
+- Update SQLite to v1.60.1 with its matching libc runtime while retaining the Go 1.27.1 minimum.
+- Update CrawlKit to v0.16.7 to stay current with the shared crawler toolkit. Thanks @vincentkoc.
+- Update CrawlKit to v0.16.6 to stay current with the shared crawler toolkit.
+- Update TruffleHog to v3.97.9 for secret-scanning fixes. Thanks @dependabot.
+
+## 0.4.4 - 2026-09-25
+
+Includes all changes since the last published release, `v0.4.2`. This is the
+successor to the unpublished `v0.4.3` attempt; its existing tag is preserved.
+
+- Use the source commit's committer timestamp in UTC for GoReleaser binary build metadata instead of the build start time, so independent builds do not differ solely by their embedded date.
+- Preview automatic release notes without creating or updating draft releases, preserving historical drafts while keeping pull request autolabeling enabled.
+- Stop public API sync with an error when pagination revisits any cursor, preventing repeated page cycles from looping indefinitely.
+- Update CrawlKit to v0.16.5 for snapshot import fixes and SQLite to v1.59.0 with its matching libc runtime; retain the Go 1.27.1 minimum. Thanks @dependabot.
+- Replace Markdown exports atomically with private permissions, preserving previous files on write failure and avoiding writes through symbolic or hard links.
+- Report archive read and completion-record write errors instead of silently exporting incomplete Markdown or reporting successful syncs; preserve the affected note's existing export on read failure.
+- Allow deletion-only placeholders to acquire archived content while retaining note and child tombstones and normal precedence for populated notes.
+- Preserve private API notes during desktop-cache fallback and reject older updates from the same source without losing deletion evidence.
+- Include a stable note-ID digest in Markdown filenames to prevent same-title exports overwriting one another; existing export files are not removed.
+- Include archived summaries in Markdown exports and human-readable `note get` output.
+- Independently rebuild non-Darwin release binaries and compare their bytes before publication.
+
+**Upgrade notes:** No database schema migration is required. Existing Markdown
+export files are retained. Failed syncs may retain completed writes while
+returning an error.
+
+## 0.4.3 - 2026-09-25
+
+**Release status:** `v0.4.3` was tagged, but its binary release was not published
+because the independent rebuild byte comparison failed.
+
+- Stop public API sync with an error when pagination revisits any cursor, preventing repeated page cycles from looping indefinitely.
+- Update CrawlKit to v0.16.5 for snapshot import fixes and SQLite to v1.59.0 with its matching libc runtime; retain the Go 1.27.1 minimum. Thanks @dependabot.
+- Replace Markdown exports atomically with private permissions, preserving previous files on write failure and avoiding writes through symbolic or hard links.
+- Report archive read and completion-record write errors instead of silently exporting incomplete Markdown or reporting successful syncs; preserve the affected note's existing export on read failure.
+- Allow deletion-only placeholders to acquire archived content while retaining note and child tombstones and normal precedence for populated notes.
+- Preserve private API notes during desktop-cache fallback and reject older updates from the same source without losing deletion evidence.
+- Include a stable note-ID digest in Markdown filenames to prevent same-title exports overwriting one another; existing export files are not removed.
+- Include archived summaries in Markdown exports and human-readable `note get` output.
+- Independently rebuild non-Darwin release binaries and compare their bytes before publication.
+
+**Upgrade notes:** No database schema migration is required. Existing Markdown
+export files are retained. Failed syncs may retain completed writes while
+returning an error.
+
+## 0.4.2 - 2026-09-05
+
+**Highlights:** Private API sync now fails instead of reporting success when Granola data cannot be fetched, alongside safer snapshot imports and bounded API responses and retry waits.
+
+- Preserve archived note bodies and fail sync when private API document batch hydration fails, instead of reporting a successful list-only archive. Thanks @SebTardif.
+- Report private API transcript and panel fetch failures instead of recording incomplete syncs as successful; retain earlier writes for a later retry. Thanks @SebTardif.
+- Reject absolute and parent-traversing snapshot shard paths through CrawlKit v0.14.9. Thanks @SebTardif.
+- Cap private API response bodies at 64 MiB to prevent oversized responses from exhausting memory. Thanks @SebTardif.
+- Cap public API rate-limit waits at 60 seconds, including oversized numeric and HTTP-date `Retry-After` headers, without overflowing the delay. Thanks @SebTardif.
+- Bound release-check HTTP requests to 30 seconds so an unresponsive server cannot hang update checks indefinitely.
+- Update Go to 1.27.1, SQLite to 3.53.4 through modernc.org/sqlite v1.58.0, terminal/runtime dependencies, GoReleaser, vulnerability/dead-code tooling, and TruffleHog secret scanning.
+
+## v0.4.1 - 2026-08-14
+
+- Update the minimum Go toolchain to 1.26.6 to resolve GO-2026-5026, GO-2026-5972, GO-2026-6090, and GO-2026-6218.
+## v0.4.0 - 2026-08-03
+
+- Add an explicit official Granola public API source for scoped read-only note,
+  summary, and transcript archiving without depending on the desktop app's
+  local encryption key.
+- Rewrite the README around installation and first-use workflows, with the full command reference moved into `docs/commands.md`.
+
+## v0.3.7 - 2026-08-02
+
+- Fall back to a readable desktop cache when implicit private API sync has no local credentials, while keeping explicit private API failures path-free.
+- Honor trailing `--json` for structured subcommands and searches with an
+  explicit query, while preserving literal `--json` arguments and free-form SQL.
+- Restore Crabbox validation with a root volume that fits the current AWS
+  developer image.
+- Update CrawlKit to v0.14.5 and pick up the corrected `go-colorful` v1.4.1
+  terminal color conversion.
+- Avoid `SQLITE_BUSY` failures when concurrent commands open an archive whose
+  schema is already current.
+
+## v0.3.6 - 2026-08-01
+
+- Standardize maintainer Make targets, keep local release commands fail-closed on unified CI, and require notarization when verifying legacy macOS archives.
+- Refresh terminal width, syscall, text, and SQLite runtime dependencies.
+- Update CrawlKit, SQLite, vulnerability/dead-code tooling, and GitHub Actions dependencies.
+
+## v0.3.5 - 2026-07-26
+
+- Re-release v0.3.4's content through the official signed and notarized release pipeline; v0.3.4's macOS archives were signed but not notarized.
+
+## v0.3.4 - 2026-07-26
+
+- Detect Granola 7.427+'s app-scoped Keychain migration, fail local sync and unlock with honest diagnostics, and return a nonzero status instead of silently importing nothing. Thanks @nwoonet.
+
+## v0.3.3 - 2026-07-18
+
+### Highlights
+
+- Preserve explicit Granola deletions as durable tombstones across notes, transcripts, panels, and source objects.
+
+### Snapshots
+
+- Make portable snapshot imports merge by default, retaining destination-only records and local conflict winners; keep `--replace` for explicit exact restores.
+
+### Dependencies
+
+- Update CrawlKit to v0.14.3 and refresh its SQLite runtime dependencies.
+
+### Release engineering
+
+- Ship the first notarized macOS release through the unified OpenClaw pipeline, with `.deb` and `.rpm` packages bound into the verified asset inventory.
+
+## v0.3.2 - 2026-07-09
+
+- Add Developer ID signing and pre-publish verification for official macOS archives.
+- Update CrawlKit to v0.13.4.
+- Update Go to 1.26.5 to remove GO-2026-5856 from the `crypto/tls` dependency graph.
+
+## v0.3.1 - 2026-06-19
+
+- Update `golang.org/x/sys` to remove GO-2026-5024 from the Windows dependency graph.
+- Refresh terminal rendering, Unicode text, and SQLite runtime dependencies.
+- Treat `%`, `_`, and backslashes literally in archive search and update CrawlKit.
+
+## v0.3.0 - 2026-06-11
+
+- Add explicit in-memory encrypted Granola JSON unlock for cache import and private API authentication.
+- Add a clear diagnostic when Granola desktop exposes encrypted-only state, thanks @elijahmuraoka.
+
 ## v0.2.1 - 2026-05-18
 
 - Accept plaintext Granola cache version 8 for desktop-cache sync, including

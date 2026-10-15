@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"errors"
+	"os"
 	"time"
 
 	"github.com/openclaw/graincrawl/internal/config"
@@ -21,8 +22,23 @@ func PrivateAPI(ctx context.Context, cfg config.Config, st *store.Store, opts Op
 	paths := granola.Paths(cfg.Granola.ProfilePath, cfg.Granola.AppPath)
 	_, tokens, user, err := granola.ReadSupabase(paths.Supabase)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Result{}, ErrPrivateAPITokenNotFound
+		}
 		return Result{}, err
 	}
+	return privateAPIWithSession(ctx, cfg, st, opts, tokens, user, "")
+}
+
+func privateAPIFromEncryptedSupabase(ctx context.Context, cfg config.Config, st *store.Store, opts Options, raw []byte) (Result, error) {
+	_, tokens, user, err := granola.ParseSupabase(raw)
+	if err != nil {
+		return Result{}, err
+	}
+	return privateAPIWithSession(ctx, cfg, st, opts, tokens, user, "used encrypted supabase.json credentials in memory")
+}
+
+func privateAPIWithSession(ctx context.Context, cfg config.Config, st *store.Store, opts Options, tokens granola.WorkOSTokens, user granola.UserInfo, message string) (Result, error) {
 	summary := granola.SummarizeToken(tokens, time.Now())
 	if !summary.Present {
 		return Result{}, ErrPrivateAPITokenNotFound
@@ -49,13 +65,13 @@ func PrivateAPI(ctx context.Context, cfg config.Config, st *store.Store, opts Op
 			return Result{}, err
 		}
 	}
-	return syncPrivate(ctx, client, st, opts, cfg.API.IncludeSharedWithMe)
+	return syncPrivateWithMessage(ctx, client, st, opts, cfg.API.IncludeSharedWithMe, message)
 }
 
-func syncPrivate(ctx context.Context, client privateapi.Client, st *store.Store, opts Options, includeShared bool) (Result, error) {
+func syncPrivateWithMessage(ctx context.Context, client privateapi.Client, st *store.Store, opts Options, includeShared bool, message string) (Result, error) {
 	source := model.SourcePrivateAPI
 	started := time.Now().UTC()
-	result := Result{Source: source}
+	result := Result{Source: source, Message: message}
 	docs, err := client.GetDocuments(ctx, privateapi.DocumentsRequest{IncludeSharedWithMe: includeShared})
 	if err != nil {
 		return result, err
@@ -65,10 +81,15 @@ func syncPrivate(ctx context.Context, client privateapi.Client, st *store.Store,
 	if opts.Limit > 0 && len(all) > opts.Limit {
 		all = all[:opts.Limit]
 	}
-	if hydrated, err := client.GetDocumentsBatch(ctx, documentIDs(all)); err == nil && len(hydrated.Docs) > 0 {
+	hydrated, err := client.GetDocumentsBatch(ctx, documentIDs(all))
+	if err != nil {
+		return result, err
+	}
+	if len(hydrated.Docs) > 0 {
 		all = mergeHydratedDocuments(all, hydrated.Docs)
 	}
 	now := time.Now().UTC()
+	deletedDocuments := make(map[string]struct{})
 	for _, doc := range all {
 		if err := retainSourceObject(ctx, st, source, "document", doc.ID, doc.ID, doc, now); err != nil {
 			return result, err
@@ -86,44 +107,81 @@ func syncPrivate(ctx context.Context, client privateapi.Client, st *store.Store,
 		result.Notes++
 		if opts.IncludeTranscripts {
 			chunks, err := client.GetDocumentTranscript(ctx, doc.ID)
-			if err == nil {
-				for _, chunk := range chunks {
-					if err := retainSourceObject(ctx, st, source, "transcript_chunk", chunk.ID, doc.ID, chunk, now); err != nil {
-						return result, err
-					}
-					modelChunk, err := privateapi.TranscriptToModel(chunk)
-					if err != nil {
-						return result, err
-					}
-					if err := st.UpsertTranscriptChunk(ctx, modelChunk); err != nil {
-						return result, err
-					}
-					result.Transcripts++
+			if err != nil {
+				return result, err
+			}
+			for _, chunk := range chunks {
+				if err := retainSourceObject(ctx, st, source, "transcript_chunk", chunk.ID, doc.ID, chunk, now); err != nil {
+					return result, err
 				}
+				modelChunk, err := privateapi.TranscriptToModel(chunk)
+				if err != nil {
+					return result, err
+				}
+				if err := st.UpsertTranscriptChunk(ctx, modelChunk); err != nil {
+					return result, err
+				}
+				result.Transcripts++
 			}
 		}
 		if opts.IncludePanels {
 			panels, err := client.GetDocumentPanels(ctx, doc.ID)
-			if err == nil {
-				for _, panel := range panels {
-					if err := retainSourceObject(ctx, st, source, "panel", panel.ID, doc.ID, panel, now); err != nil {
-						return result, err
-					}
-					modelPanel, err := privateapi.PanelToModel(panel)
-					if err != nil {
-						return result, err
-					}
-					if err := st.UpsertPanel(ctx, modelPanel); err != nil {
-						return result, err
-					}
-					result.Panels++
+			if err != nil {
+				return result, err
+			}
+			for _, panel := range panels {
+				if err := retainSourceObject(ctx, st, source, "panel", panel.ID, doc.ID, panel, now); err != nil {
+					return result, err
 				}
+				modelPanel, err := privateapi.PanelToModel(panel)
+				if err != nil {
+					return result, err
+				}
+				if err := st.UpsertPanel(ctx, modelPanel); err != nil {
+					return result, err
+				}
+				if modelPanel.DeletedAt != nil {
+					if err := st.TombstoneSourceObject(ctx, source, "panel", panel.ID, store.Deletion{
+						At:     *modelPanel.DeletedAt,
+						Source: source,
+						Reason: store.DeletionReasonSourceField,
+					}); err != nil {
+						return result, err
+					}
+				}
+				result.Panels++
 			}
 		}
+		if note.DeletedAt != nil {
+			if err := st.TombstoneDocument(ctx, doc.ID, store.Deletion{
+				At:     *note.DeletedAt,
+				Source: source,
+				Reason: store.DeletionReasonSourceField,
+			}); err != nil {
+				return result, err
+			}
+			deletedDocuments[doc.ID] = struct{}{}
+			result.Deleted++
+		}
 	}
-	completed := time.Now().UTC()
-	_, _ = st.InsertSyncRun(ctx, model.SyncRun{Source: source, StartedAt: started, CompletedAt: completed, Status: "ok", Notes: result.Notes, Transcripts: result.Transcripts, Panels: result.Panels})
-	return result, nil
+	for _, documentID := range docs.Deleted {
+		if documentID == "" {
+			continue
+		}
+		if _, ok := deletedDocuments[documentID]; ok {
+			continue
+		}
+		if err := st.TombstoneDocument(ctx, documentID, store.Deletion{
+			At:     now,
+			Source: source,
+			Reason: store.DeletionReasonExplicitFeed,
+		}); err != nil {
+			return result, err
+		}
+		deletedDocuments[documentID] = struct{}{}
+		result.Deleted++
+	}
+	return completeSync(ctx, st, started, result)
 }
 
 func documentIDs(docs []privateapi.Document) []string {

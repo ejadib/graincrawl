@@ -24,18 +24,22 @@ Commands:
   people                  List retained people source objects.
   workspaces              List retained workspace source objects.
   sources                 Show source adapter support.
-  unlock                  Explain explicit unlock surfaces.
+  unlock [surface]        Inspect or explicitly unlock a local source.
   secrets                 Inspect graincrawl-managed secret state.
   export markdown         Export notes as Markdown.
   snapshot create         Create a portable crawlkit snapshot.
-  import <path>           Import a portable crawlkit snapshot.
+  import [--replace] <path>
+                          Merge a portable snapshot; --replace restores exactly.
   tui                     Browse archived notes in the terminal.
   completion              Print shell completion for bash or zsh.
 
 Examples:
   graincrawl doctor --json
   graincrawl sync --source private-api
+  GRAINCRAWL_ALLOW_PUBLIC_API=true GRANOLA_PUBLIC_API_KEY=... graincrawl sync --source public-api
+  graincrawl sync --source private-api --unlock encrypted-json
   graincrawl sync --source desktop-cache
+  graincrawl unlock encrypted-json
   graincrawl notes --json
   graincrawl sql "select count(*) as notes from notes"
 `
