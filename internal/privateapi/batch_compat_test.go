@@ -9,24 +9,30 @@ import (
 	"testing"
 )
 
-func TestBatchCompatibilityChunks(t *testing.T) {
+func TestGetDocumentsBatchChunks(t *testing.T) {
 	for _, n := range []int{0, 1, 50, 51, 98, 101} {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {
 			calls := 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var b BatchRequest
-				json.NewDecoder(r.Body).Decode(&b)
+				if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+					t.Errorf("decode request: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
 				calls++
 				if len(b.DocumentIDs) > 50 {
-					t.Error("oversized")
-					w.WriteHeader(400)
+					t.Errorf("batch contains %d IDs, want at most 50", len(b.DocumentIDs))
+					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
 				docs := []Document{}
 				for _, id := range b.DocumentIDs {
 					docs = append(docs, Document{ID: id})
 				}
-				json.NewEncoder(w).Encode(BatchResponse{Docs: docs})
+				if err := json.NewEncoder(w).Encode(BatchResponse{Docs: docs}); err != nil {
+					t.Errorf("encode response: %v", err)
+				}
 			}))
 			defer srv.Close()
 			ids := []string{}
@@ -40,7 +46,7 @@ func TestBatchCompatibilityChunks(t *testing.T) {
 			}
 			for i, d := range got.Docs {
 				if d.ID != ids[i] {
-					t.Fatal("order")
+					t.Fatalf("document %d = %q, want %q", i, d.ID, ids[i])
 				}
 			}
 		})
